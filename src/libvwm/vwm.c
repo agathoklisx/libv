@@ -25,15 +25,16 @@ int main (int argc, char **argv) {
 
   vwm_frame *frame = my.win.get.frame_at (win, 0);
 
-  char *largv[] = {"sh", NULL};
   my.frame.set.argv (frame, argc-1, argv + 1);
+  my.frame.set.log (frame, NULL, 1);
+  char *largv[] = {"sh", NULL};
   frame = my.win.get.frame_at (win, 1);
   my.frame.set.argv (frame, 1, largv);
 
   win = my.win.new (this, NULL, WinNewOpts (
     .rows =rows,
     .cols = cols,
-    .num_frames = 2,
+    .num_frames = 3,
     .max_frames = 3));
 
   frame = my.win.get.frame_at (win, 0);
@@ -45,6 +46,10 @@ int main (int argc, char **argv) {
 
   my.frame.fork (this, frame);
   frame = my.win.get.frame_at (win, 1);
+  my.frame.set.argv (frame, 1, llargv);
+  my.frame.fork (this, frame);
+
+  frame = my.win.get.frame_at (win, 2);
   my.frame.set.argv (frame, 1, llargv);
   my.frame.fork (this, frame);
 

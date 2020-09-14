@@ -61,6 +61,7 @@
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
+typedef signed int utf8;
 
 typedef struct vt_string {
   size_t
@@ -87,6 +88,9 @@ typedef struct vwm_term vwm_term;
 typedef struct vwm_win vwm_win;
 typedef struct vwm_frame vwm_frame;
 typedef struct vwm_t vwm_t;
+
+typedef vt_string *(*ProcessChar) (vwm_frame *, vt_string *, int);
+typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
 
 typedef struct win_opts {
   int
@@ -133,7 +137,8 @@ typedef struct vwm_tern_self {
 typedef struct vwm_frame_set_self {
   void
     (*fd) (vwm_frame *, int),
-    (*argv) (vwm_frame *, int, char **);
+    (*argv) (vwm_frame *, int, char **),
+    (*unimplemented) (vwm_frame *, Unimplemented);
 
   int (*log) (vwm_frame *, char *,  int);
 } vwm_frame_set_self;

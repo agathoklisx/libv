@@ -89,6 +89,7 @@ SHELL  := zsh
 
 LIBFLAGS += -DEDITOR='"$(EDITOR)"'
 LIBFLAGS += -DSHELL='"$(SHELL)"'
+LIBFLAGS += -DTMPDIR='"$(SYSTMPDIR)"'
 
 all: shared app-shared
 
@@ -152,12 +153,14 @@ makeenv:
 	@$(TEST) -d $(SYSLIBDIR)  || $(MKDIR)   $(SYSLIBDIR)
 	@$(TEST) -d $(SYSINCDIR)  || $(MKDIR)   $(SYSINCDIR)
 	@$(TEST) -d $(SYSBINDIR)  || $(MKDIR)   $(SYSBINDIR)
+	@$(TEST) -d $(SYSTMPDIR)  || $(MKDIR)   $(SYSTMPDIR)
 
 checkenv:
 	@$(TEST) -w $(SYSDIR)     || exit 1
 	@$(TEST) -w $(SYSLIBDIR)  || exit 1
 	@$(TEST) -w $(SYSINCDIR)  || exit 1
 	@$(TEST) -w $(SYSBINDIR)  || exit 1
+	@$(TEST) -w $(SYSTMPDIR)  || exit 1
 
 INSTALL = install
 RM = rm -f
