@@ -191,6 +191,7 @@ struct vwm_frame {
     mb_curlen,
     col_pos,
     row_pos,
+    new_rows,
     num_rows,
     num_cols,
     last_row,
@@ -809,7 +810,7 @@ private int **vwm_alloc_ints (int rows, int cols, int val) {
   obj = Alloc (rows * sizeof (int *));
 
   for (int i = 0; i < rows; i++) {
-    obj[i] = Alloc (sizeof (int) * cols);
+    obj[i] = Alloc (sizeof (int *) * cols);
 
     for (int j = 0; j < cols; j++)
       obj[i][j] = val;
@@ -1237,11 +1238,10 @@ private vt_string *vt_frame_attr_set (vwm_frame *frame, vt_string *buf) {
 
 private vt_string *vt_append (vwm_frame *frame, vt_string *buf, utf8 c) {
   if (frame->col_pos > frame->num_cols) {
-    if (frame->row_pos < frame->last_row) {
+    if (frame->row_pos < frame->last_row)
       frame->row_pos++;
-    } else {
+    else
       vt_video_scroll (frame, 1);
-    }
 
     VtString.append (buf, "\r\n");
     frame->col_pos = 1;
@@ -2172,6 +2172,8 @@ private int vwm_frame_set_log (vwm_frame *this, char *fname, int remove_log) {
 
   if (this->logfd is NOTOK) return NOTOK;
 
+  if (-1 is fchmod (this->logfd, 0600)) return NOTOK;
+
   this->logfile = strdup (fname);
   this->remove_log = remove_log;
   return this->logfd;
@@ -2250,6 +2252,43 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
   free (frame);
 }
 
+private void vwm_frame_on_resize (vwm_frame **thisp, int rows, int cols) {
+
+  vwm_frame *this = *thisp;
+  int **videomem = vwm_alloc_ints (rows, cols, 0);
+  int **colors = vwm_alloc_ints (rows, cols, COLOR_FG_NORMAL);
+  int row_pos = 0;
+  int i, j, nj, ni;
+
+  for (i = this->num_rows, ni = rows; i and ni; i--, ni--) {
+    if (this->row_pos is i)
+      if ((row_pos = i + rows - this->num_rows) < 1)
+        row_pos = 1;
+
+    for (j = 0, nj = 0; (j < this->num_cols) and (nj < cols); j++, nj++) {
+      videomem[ni-1][nj] = this->videomem[i-1][j];
+      colors[ni-1][nj] = this->colors[i-1][j];
+    }
+  }
+
+  ifnot (row_pos) /* We never reached the old cursor */
+    row_pos = 1;
+
+  this->row_pos = row_pos;
+  this->col_pos = (this->col_pos > cols ? cols : this->col_pos);
+
+  for (i = 0; i < this->num_rows; i++)
+    free (this->videomem[i]);
+  free (this->videomem);
+
+  for (i = 0; i < this->num_rows; i++)
+    free (this->colors[i]);
+  free (this->colors);
+
+  (*thisp)->videomem = videomem;
+  (*thisp)->colors = colors;
+}
+
 private void vwm_make_separator (vt_string *render, char *color, int cells, int row, int col) {
   vt_goto (render, row, col);
   VtString.append (render, color);
@@ -2290,6 +2329,7 @@ private void vwm_win_draw (vwm_win *this) {
   utf8 chr = 0;
 
   vt_string *render = VtString.new (4096);
+  VtString.append (render, TERM_SCREEN_CLEAR);
   vt_setscroll (render, 0, 0);
   vt_attr_reset (render);
   vt_setbg (render, COLOR_BG_NORM);
@@ -2876,7 +2916,12 @@ private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char
     return OK;
   }
 
-  utf8 c = getkey (STDIN_FILENO);
+  int param = 0;
+
+  utf8 c;
+
+getc_again:
+  c = getkey (STDIN_FILENO);
 
   if (-1 is c) return OK;
 
@@ -2973,8 +3018,167 @@ private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char
         vwm_win_draw (win);
       }
       break;
+
+    case '+': {
+      if (win->length is 1)
+        break;
+
+      int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
+
+      ifnot (param) param = 1;
+      if (param > min_rows) param = min_rows;
+
+      int num_lines;
+      int mod;
+
+      if (param is 1 or param is win->length - 1) {
+        num_lines = 1;
+        mod = 0;
+      } else if (param > win->length - 1) {
+        num_lines = param / (win->length - 1);
+        mod = param % (win->length - 1);
+      } else {
+        num_lines = (win->length - 1) / param;
+        mod = (win->length - 1) % param;
+      }
+
+      int orig_param = param;
+
+      vwm_frame *fr = win->head;
+      while (fr) {
+        fr->new_rows = fr->num_rows;
+        fr = fr->next;
+      }
+
+      fr = win->head;
+      int iter = 1;
+      while (fr and param and iter++ < ((win->length - 1) * 3)) {
+        if (frame is fr)
+          goto next_plus_frame;
+
+        int num = num_lines;
+        while (fr->new_rows > 2 and num--) {
+          fr->new_rows = fr->new_rows - 1;
+          param--;
+        }
+
+        if (fr->new_rows is 2)
+          goto next_plus_frame;
+
+        if (mod) {
+          fr->new_rows--;
+          param--;
+          mod--;
+        }
+
+      next_plus_frame:
+        if (fr->next is NULL)
+          fr = win->head;
+        else
+          fr = fr->next;
+      }
+
+      frame->new_rows = frame->new_rows + (orig_param - param);
+      goto the_resize;
+    }
+      break;
+
+    case '-': {
+      if (1 is win->length or frame->num_rows <= 2)
+        break;
+
+      if (frame->num_rows - param <= 2)
+        param = frame->num_rows - 2;
+
+      if (0 >= param)
+        param = 1;
+
+      int num_lines;
+      int mod;
+      if (param is 1 or param is win->length - 1) {
+        num_lines = 1;
+        mod = 0;
+      } else if (param > win->length - 1) {
+        num_lines = param / (win->length - 1);
+        mod = param % (win->length - 1);
+      } else {
+        num_lines = (win->length - 1) / param;
+        mod = (win->length - 1) % param;
+      }
+
+      vwm_frame *fr = win->head;
+      while (fr) {
+        fr->new_rows = fr->num_rows;
+        fr = fr->next;
+      }
+
+      int orig_param = param;
+
+      fr = win->head;
+      int iter = 1;
+      while (fr and param and iter++ < ((win->length - 1) * 3)) {
+        if (frame is fr)
+          goto next_minus_frame;
+
+        fr->new_rows = fr->num_rows + num_lines;
+
+        param -= num_lines;
+
+        if (mod) {
+          fr->new_rows++;
+          param--;
+          mod--;
+        }
+
+      next_minus_frame:
+        if (fr->next is NULL)
+          fr = win->head;
+        else
+          fr = fr->next;
+      }
+
+      frame->new_rows = frame->new_rows - (orig_param - param);
+      goto the_resize;
+    }
+      break;
+
+    case '0':
+    case '1':
+    case '2':
+    case '3':
+    case '4':
+    case '5':
+    case '6':
+    case '7':
+    case '8':
+    case '9':
+      param *= 10;
+      param += (c - '0');
+      goto getc_again;
   }
 
+  return OK;
+
+the_resize: {}
+
+  int frow = 1;
+  vwm_frame *it = win->head;
+  while (it) {
+    vwm_frame_on_resize (&it, it->new_rows, it->num_cols);
+    it->num_rows = it->new_rows;
+    it->last_row = it->num_rows;
+    it->first_row = frow;
+    frow += it->num_rows + 1;
+    if (it->argv[0] and it->pid isnot -1) {
+      struct winsize ws = {.ws_row = it->num_rows, .ws_col = it->num_cols};
+      ioctl (it->fd, TIOCSWINSZ, &ws);
+      kill (it->pid, SIGWINCH);
+    }
+
+    it = it->next;
+  }
+
+  vwm_win_draw (win);
   return OK;
 }
 
