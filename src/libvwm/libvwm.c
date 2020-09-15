@@ -273,6 +273,7 @@ struct vwm_prop {
     name_gen,
     num_rows,
     num_cols,
+    need_resize,
     first_column;
 
   uint modes;
@@ -2252,9 +2253,7 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
   free (frame);
 }
 
-private void vwm_frame_on_resize (vwm_frame **thisp, int rows, int cols) {
-
-  vwm_frame *this = *thisp;
+private void vwm_frame_on_resize (vwm_frame *this, int rows, int cols) {
   int **videomem = vwm_alloc_ints (rows, cols, 0);
   int **colors = vwm_alloc_ints (rows, cols, COLOR_FG_NORMAL);
   int row_pos = 0;
@@ -2285,8 +2284,8 @@ private void vwm_frame_on_resize (vwm_frame **thisp, int rows, int cols) {
     free (this->colors[i]);
   free (this->colors);
 
-  (*thisp)->videomem = videomem;
-  (*thisp)->colors = colors;
+  this->videomem = videomem;
+  this->colors = colors;
 }
 
 private void vwm_make_separator (vt_string *render, char *color, int cells, int row, int col) {
@@ -2601,13 +2600,53 @@ theerror:
   return frame->pid;
 }
 
-private void vwm_sigwinch_handler (int sig);
 private void vwm_sigwinch_handler (int sig) {
   signal (sig, vwm_sigwinch_handler);
   vwm_t *this = VWM;
+  $my(need_resize) = 1;
+}
+
+private void vwm_handle_sigwinch (vwm_t *this) {
   int rows; int cols;
   my.term.init_size ($my(term), &rows, &cols);
   my.set.size (this, rows, cols, 1);
+
+  vwm_win *win = $my(head);
+  while (win) {
+    win->num_rows = $my(num_rows);
+    win->num_cols = $my(num_cols);
+    win->last_row = win->num_rows;
+
+    int frame_rows = 0;
+    int mod = my.win.frame_rows (win, win->length, &frame_rows);
+
+    int
+      num_rows = frame_rows + mod,
+      first_row = win->first_row;
+
+    vwm_frame *frame = win->head;
+    while (frame) {
+      vwm_frame_on_resize (frame, num_rows, win->num_cols);
+      frame->first_row = first_row;
+      frame->num_rows = num_rows;
+      frame->last_row = frame->num_rows;
+      first_row += num_rows + 1;
+      num_rows = frame_rows;
+      if (frame->argv[0] and frame->pid isnot -1) {
+        struct winsize ws = {.ws_row = frame->num_rows, .ws_col = frame->num_cols};
+        ioctl (frame->fd, TIOCSWINSZ, &ws);
+        kill (frame->pid, SIGWINCH);
+      }
+
+      frame = frame->next;
+    }
+    win = win->next;
+  }
+
+  win = $my(current);
+
+  vwm_win_draw (win);
+  $my(need_resize) = 0;
 }
 
 private void vwm_exit_signal (int sig) {
@@ -2656,6 +2695,9 @@ private int vwm_main (vwm_t *this) {
   }
 
   for (;;) {
+    if ($my(need_resize))
+      vwm_handle_sigwinch (this);
+
     win = $my(current);
     my.win.set.frame (win, win->current);
 
@@ -2686,8 +2728,7 @@ private int vwm_main (vwm_t *this) {
           break;
       }
 
-      if (errno isnot EINTR)
-        break;
+      continue;
     }
 
     frame = win->current;
@@ -3164,7 +3205,7 @@ the_resize: {}
   int frow = 1;
   vwm_frame *it = win->head;
   while (it) {
-    vwm_frame_on_resize (&it, it->new_rows, it->num_cols);
+    vwm_frame_on_resize (it, it->new_rows, it->num_cols);
     it->num_rows = it->new_rows;
     it->last_row = it->num_rows;
     it->first_row = frow;
