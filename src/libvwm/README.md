@@ -43,9 +43,10 @@ Default Key bindings:
 
 MODE_KEY-q: quit the application  
 MODE_KEY-k: kill the current procedure in the current frame  
-MODE_KEY-c: open the default application (zsh)  
-MODE_KEY-[left|right]: switch to the prev|next window respectively  
+MODE_KEY-c: open the default application (by default zsh)  
 MODE_KEY-[up|down|w]: switch to the upper|lower frame respectively  
+MODE_KEY-[left|right]: switch to the prev|next window respectively  
+MODE_KEY-`: switch to the previously focused window  
 MODE_KEY-[count]+: increase the size of the current frame (default count 1)  
 MODE_KEY-[count]-: decrease the size of the current frame (default count 1)  
 MODE_KEY-MODE_KEY: return the MODE_KEY to the application  

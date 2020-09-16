@@ -32,7 +32,7 @@ static VtString_T VtString;
 #endif
 
 #ifndef EDITOR
-#define EDITOR "vedas"
+#define EDITOR "vim"
 #endif
 
 #ifndef DEFAULT_APP
@@ -91,9 +91,17 @@ static VtString_T VtString;
 #define UNDERLINE       0x02
 #define BLINK           0x04
 #define REVERSE         0x08
+#define ITALIC          0x10
 #define SELECTED        0xF0
 #define COLOR_FG_NORM   37
 #define COLOR_BG_NORM   49
+
+#define NCHARSETS       2
+#define G0              0
+#define G1              1
+#define UK_CHARSET      0x01
+#define US_CHARSET      0x02
+#define GRAPHICS        0x04
 
 #define TERM_LAST_RIGHT_CORNER      "\033[999C\033[999B"
 #define TERM_LAST_RIGHT_CORNER_LEN  12
@@ -108,6 +116,14 @@ static VtString_T VtString;
 #define TERM_SCROLL_RESET           "\033[r"
 #define TERM_SCROLL_RESET_LEN       3
 #define TERM_GOTO_PTR_POS_FMT       "\033[%d;%dH"
+#define TERM_CURSOR_HIDE            "\033[?25l"
+#define TERM_CURSOR_HIDE_LEN        6
+#define TERM_CURSOR_SHOW            "\033[?25h"
+#define TERM_CURSOR_SHOW_LEN        6
+#define TERM_AUTOWRAP_ON            "\033[?7h"
+#define TERM_AUTOWRAP_ON_LEN        5
+#define TERM_AUTOWRAP_OFF           "\033[?7l"
+#define TERM_AUTOWRAP_OFF_LEN       5
 
 #define TERM_SEND_ESC_SEQ(seq) fd_write (this->out_fd, seq, seq ## _LEN)
 
@@ -1085,6 +1101,10 @@ private vt_string *vt_bold (vt_string *buf, int on) {
   return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
 }
 
+private vt_string *vt_italic (vt_string *buf, int on) {
+  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
+}
+
 private vt_string *vt_blink (vt_string *buf, int on) {
   return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
 }
@@ -1189,6 +1209,16 @@ checkchange:
       }
     }
 
+    if (change & ITALIC) {
+      if ((*currattr) & ITALIC) {
+        vt_italic (buf, 0);
+        *currattr &= ~ITALIC;
+      } else {
+        vt_italic (buf, 1);
+        *currattr |= ITALIC;
+      }
+    }
+
     if (change & UNDERLINE) {
       if ((*currattr) & UNDERLINE) {
         vt_underline (buf, 0);
@@ -1228,6 +1258,9 @@ private vt_string *vt_attr_set (vt_string *buf, int textattr) {
   if (textattr & REVERSE)
     vt_reverse (buf, 1);
 
+  if (textattr & ITALIC)
+    vt_italic (buf, 1);
+
   return buf;
 }
 
@@ -1266,6 +1299,24 @@ private vt_string *vt_keystate_print (vt_string *buf, int application) {
   return VtString.append (buf, "\033>\033[?1l");
 }
 
+private vt_string *vt_altcharset (vt_string *buf, int charset, int type) {
+  switch (type) {
+    case UK_CHARSET:
+      VtString.append_with_len (buf, STR_FMT (3, "\033%cA", (charset is G0 ? '(' : ')')), 3);
+      break;
+
+    case US_CHARSET:
+      VtString.append_with_len (buf, STR_FMT (3, "\033%cB", (charset is G0 ? '(' : ')')), 3);
+      break;
+
+    case GRAPHICS:
+      VtString.append_with_len (buf, STR_FMT (3, "\033%c0", (charset is G0 ? '(' : ')')), 3);
+      break;
+
+    default:  break;
+  }
+}
+
 private vt_string *vt_esc_scan (vwm_frame *, vt_string *, int);
 
 private void vt_frame_esc_set (vwm_frame *frame) {
@@ -1288,7 +1339,8 @@ private void vt_frame_reset (vwm_frame *frame) {
   frame->key_state = norm;
   frame->textattr = NORMAL;
   frame->saved_textattr = NORMAL;
-  /* frame->charset[G0] = US_CHARSET; frame->charset[G1] = US_CHARSET; */
+  frame->charset[G0] = US_CHARSET;
+  frame->charset[G1] = US_CHARSET;
   vt_frame_esc_set (frame);
 }
 
@@ -1312,15 +1364,24 @@ private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
           vt_keystate_print (buf, frame->key_state);
           break;
 
+        case 7:
+          VtString.append_with_len (buf, TERM_AUTOWRAP_ON, TERM_AUTOWRAP_ON_LEN);
+          break;
+
+        case 25:
+          VtString.append_with_len (buf, TERM_CURSOR_SHOW, TERM_CURSOR_SHOW_LEN);
+          break;
+
+        case 47:
+          VtString.append_with_len (buf, TERM_SCREEN_SAVE, TERM_SCREEN_SAVE_LEN);
+          break;
+
         case 2: /* Set ansi mode */
         case 3: /* 132 char/row */
         case 4: /* Set jump scroll */
         case 5: /* Set reverse screen */
         case 6: /* Set relative coordinates */
-        case 7: /* Set auto wrap on */
         case 8: /* Set auto repeat on */
-        case 25: /* Set cursor on */
-        case 47: /* Switch to alternate buffer */
         default:
           frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
           break;
@@ -1334,15 +1395,24 @@ private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
         vt_keystate_print (buf, frame->key_state);
         break;
 
+        case 7:
+          VtString.append_with_len (buf, TERM_AUTOWRAP_OFF, TERM_AUTOWRAP_OFF_LEN);
+          break;
+
+      case 25:
+        VtString.append_with_len (buf, TERM_CURSOR_HIDE, TERM_CURSOR_HIDE_LEN);
+        break;
+
+      case 47:
+        VtString.append_with_len (buf, TERM_SCREEN_RESTORE, TERM_SCREEN_RESTORE_LEN);
+        break;
+
       case 2: /* Set VT52 mode */
       case 3:
       case 4: /* Set smooth scroll */
       case 5: /* Set non-reversed (normal) screen */
       case 6: /* Set absolute coordinates */
-      case 7: /* Set auto wrap off */
       case 8: /* Set auto repeat off */
-      case 25: /* Set cursor off */
-      case 47: /* Switch from alternate buffer */
       default:
         frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
         break;
@@ -1367,14 +1437,20 @@ private vt_string *vt_esc_lparen (vwm_frame *frame, vt_string *buf, int c) {
 
     /* Select character sets */
     case 'A': /* UK as G0 */
-      //frame->charset[G0]=UK_CHARSET;
-      //vt_altcharset(G0, UK_CHARSET);
+      frame->charset[G0] = UK_CHARSET;
+      vt_altcharset (buf, G0, UK_CHARSET);
+      break;
+
     case 'B': /* US as G0 */
-      //frame->charset[G0]=US_CHARSET;
-      //vt_altcharset(G0, US_CHARSET);
+      frame->charset[G0] = US_CHARSET;
+      vt_altcharset (buf, G0, US_CHARSET);
+      break;
+
     case '0': /* Special character set as G0 */
-      //frame->charset[G0]=GRAPHICS;
-      //vt_altcharset(G0, GRAPHICS);
+      frame->charset[G0] = GRAPHICS;
+      vt_altcharset (buf, G0, GRAPHICS);
+      break;
+
     case '1': /* Alternate ROM as G0 */
     case '2': /* Alternate ROM special character set as G0 */
     default:
@@ -1393,15 +1469,21 @@ private vt_string *vt_esc_rparen (vwm_frame *frame, vt_string *buf, int c) {
       break;
 
     /* Select character sets */
-    case 'A': /* UK as G1 */
-      //frame->charset[G1]=UK_CHARSET;
-      //vt_altcharset(G1, UK_CHARSET);
-    case 'B': /* US as G1 */
-      //frame->charset[G1]=US_CHARSET;
-      //vt_altcharset(G1, US_CHARSET);
-    case '0': /* Special character set as G1 */
-      //frame->charset[G1]=GRAPHICS;
-      //vt_altcharset(G1, GRAPHICS);
+    case 'A':
+      frame->charset[G1] = UK_CHARSET;
+      vt_altcharset (buf, G1, UK_CHARSET);
+      break;
+
+    case 'B':
+      frame->charset[G1] = US_CHARSET;
+      vt_altcharset (buf, G1, US_CHARSET);
+      break;
+
+    case '0':
+      frame->charset[G1] = GRAPHICS;
+      vt_altcharset (buf, G1, GRAPHICS);
+      break;
+
     case '1': /* Alternate ROM as G1 */
     case '2': /* Alternate ROM special character set as G1 */
     default:
@@ -1415,10 +1497,10 @@ private vt_string *vt_esc_rparen (vwm_frame *frame, vt_string *buf, int c) {
 
 private vt_string *vt_esc_pound (vwm_frame *frame, vt_string *buf, int c) {
   switch (c)   /* Line attributes not supported */ {
-    case '3': /* Double height (top half) */
-    case '4': /* Double height (bottom half) */
-    case '5': /* Single width, single height */
-    case '6': /* Double width */
+    case '3':  /* Double height (top half) */
+    case '4':  /* Double height (bottom half) */
+    case '5':  /* Single width, single height */
+    case '6':  /* Double width */
     default:
       frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
       vt_frame_esc_set (frame);
@@ -1449,6 +1531,11 @@ private vt_string *vt_process_m (vwm_frame *frame, vt_string *buf, int c) {
       frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
       break;
 
+    case 3:
+      frame->textattr |= ITALIC;
+      vt_italic (buf, 1);
+      break;
+
     case 4:
       frame->textattr |= UNDERLINE;
       vt_underline (buf, 1);
@@ -1471,6 +1558,11 @@ private vt_string *vt_process_m (vwm_frame *frame, vt_string *buf, int c) {
     case 22:
       frame->textattr &= ~BOLD;
       vt_bold (buf, 0);
+      break;
+
+    case 23:
+      frame->textattr &= ~ITALIC;
+      vt_italic (buf, 0);
       break;
 
     case 24:
@@ -2089,19 +2181,16 @@ private void vwm_win_set_frame (vwm_win *this, vwm_frame *frame) {
 
   vt_goto (frame->output, frame->row_pos + frame->first_row - 1, frame->col_pos);
 
-/*
-  beg_loop (NCHARSETS, i)
-    ifnot (curwin->charset[i] is other->charset[i])
-      vt_altcharset (i, curwin->charset[i]);
-  end
-*/
-
   ifnot (NULL is this->last_frame) {
     ifnot (frame->key_state is this->last_frame->key_state)
       vt_keystate_print (frame->output, frame->key_state);
 
     ifnot (frame->textattr is this->last_frame->textattr)
       vt_attr_set (frame->output, frame->textattr);
+
+    for (int i = 0; i < NCHARSETS; i++)
+      if (frame->charset[i] isnot this->last_frame->charset[i])
+        vt_altcharset (frame->output, i, frame->charset[i]);
   }
 
   vt_write (frame->output->bytes, stdout);
@@ -2234,8 +2323,13 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
 
   if (NULL is frame) return;
 
-  ifnot (NULL == frame->logfile)
+
+  ifnot (NULL == frame->logfile) {
+    if (frame->remove_log)
+      unlink (frame->logfile);
+
     free (frame->logfile);
+  }
 
   for (int i = 0; i < frame->num_rows; i++)
     free (frame->videomem[i]);
@@ -2459,6 +2553,8 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
     first_row += num_rows + 1;
     num_rows = frame_rows;
   }
+
+  win->last_frame = win->head;
 
   return win;
 }
@@ -2979,8 +3075,10 @@ getc_again:
       if (frame->pid isnot -1)
         break;
 
-      frame->argv[0] = DEFAULT_APP;
-      frame->argv[1] = NULL;
+      if (NULL is frame->argv[0]) {
+        frame->argv[0] = DEFAULT_APP;
+        frame->argv[1] = NULL;
+      }
 
       my.frame.fork (this, frame);
       break;
@@ -3007,6 +3105,7 @@ getc_again:
            idx = win->length - 1;
         }
 
+        win->last_frame = frame;
         DListSetCurrent (win, idx);
         vwm_win_set_separators (win, DRAW);
       }
@@ -3015,10 +3114,7 @@ getc_again:
 
     case ARROW_LEFT_KEY:
     case ARROW_RIGHT_KEY:
-      if (1 is $my(length))
-        break;
-
-      {
+      if ($my(length) isnot 1) {
         int idx = -1;
         if (c is ARROW_RIGHT_KEY) {
           ifnot (NULL is win->next)
@@ -3032,6 +3128,7 @@ getc_again:
             idx = $my(length) - 1;
         }
 
+        $my(last_win) = win;
         DListSetCurrent ($myprop, idx);
         my.term.screen.clear ($my(term));
         win = $my(current);
@@ -3039,6 +3136,27 @@ getc_again:
           vwm_win_draw (win);
         else
           vwm_win_set_separators (win, DRAW);
+        /* testing */
+        if (0 is strcmp (win->head->argv[0], "vedas"))
+          write (win->head->fd, ":redraw\r", 8);
+      }
+      break;
+
+    case '`':
+      if ($my(last_win) isnot win) {
+        int idx = DListGetIdx ($myprop, vwm_win, $my(last_win));
+        $my(last_win) = win;
+        DListSetCurrent ($myprop, idx);
+        my.term.screen.clear ($my(term));
+        win = $my(current);
+        if (win->is_initialized)
+          vwm_win_draw (win);
+        else
+          vwm_win_set_separators (win, DRAW);
+
+        /* testing */
+        if (0 is strcmp (win->head->argv[0], "vedas"))
+          write (win->head->fd, ":redraw\r", 8);
       }
       break;
 
@@ -3060,68 +3178,67 @@ getc_again:
       }
       break;
 
-    case '+': {
-      if (win->length is 1)
-        break;
+    case '+':
+      if (win->length isnot 1) {
 
-      int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
+        int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
 
-      ifnot (param) param = 1;
-      if (param > min_rows) param = min_rows;
+        ifnot (param) param = 1;
+        if (param > min_rows) param = min_rows;
 
-      int num_lines;
-      int mod;
+        int num_lines;
+        int mod;
 
-      if (param is 1 or param is win->length - 1) {
-        num_lines = 1;
-        mod = 0;
-      } else if (param > win->length - 1) {
-        num_lines = param / (win->length - 1);
-        mod = param % (win->length - 1);
-      } else {
-        num_lines = (win->length - 1) / param;
-        mod = (win->length - 1) % param;
-      }
-
-      int orig_param = param;
-
-      vwm_frame *fr = win->head;
-      while (fr) {
-        fr->new_rows = fr->num_rows;
-        fr = fr->next;
-      }
-
-      fr = win->head;
-      int iter = 1;
-      while (fr and param and iter++ < ((win->length - 1) * 3)) {
-        if (frame is fr)
-          goto next_plus_frame;
-
-        int num = num_lines;
-        while (fr->new_rows > 2 and num--) {
-          fr->new_rows = fr->new_rows - 1;
-          param--;
+        if (param is 1 or param is win->length - 1) {
+          num_lines = 1;
+          mod = 0;
+        } else if (param > win->length - 1) {
+          num_lines = param / (win->length - 1);
+          mod = param % (win->length - 1);
+        } else {
+          num_lines = (win->length - 1) / param;
+          mod = (win->length - 1) % param;
         }
 
-        if (fr->new_rows is 2)
-          goto next_plus_frame;
+        int orig_param = param;
 
-        if (mod) {
-          fr->new_rows--;
-          param--;
-          mod--;
-        }
-
-      next_plus_frame:
-        if (fr->next is NULL)
-          fr = win->head;
-        else
+        vwm_frame *fr = win->head;
+        while (fr) {
+          fr->new_rows = fr->num_rows;
           fr = fr->next;
-      }
+        }
 
-      frame->new_rows = frame->new_rows + (orig_param - param);
-      goto the_resize;
-    }
+        fr = win->head;
+        int iter = 1;
+        while (fr and param and iter++ < ((win->length - 1) * 3)) {
+          if (frame is fr)
+            goto next_plus_frame;
+
+          int num = num_lines;
+          while (fr->new_rows > 2 and num--) {
+            fr->new_rows = fr->new_rows - 1;
+            param--;
+          }
+
+          if (fr->new_rows is 2)
+            goto next_plus_frame;
+
+          if (mod) {
+            fr->new_rows--;
+            param--;
+            mod--;
+          }
+
+        next_plus_frame:
+          if (fr->next is NULL)
+            fr = win->head;
+          else
+            fr = fr->next;
+        }
+
+        frame->new_rows = frame->new_rows + (orig_param - param);
+        goto the_resize;
+      }
       break;
 
     case '-': {

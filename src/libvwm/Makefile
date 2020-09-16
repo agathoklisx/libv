@@ -84,12 +84,14 @@ endif
 #----------------------------------------------------------#
 LIBFLAGS := -I. -I$(SYSINCDIR) $(FLAGS) -lutil
 
-EDITOR := vedas
+EDITOR := vim
 SHELL  := zsh
+DEFAULT_APP := $(SHELL)
 
 LIBFLAGS += -DEDITOR='"$(EDITOR)"'
 LIBFLAGS += -DSHELL='"$(SHELL)"'
 LIBFLAGS += -DTMPDIR='"$(SYSTMPDIR)"'
+LIBFLAGS += -DDEFAULT_APP='"$(DEFAULT_APP)"'
 
 all: shared app-shared
 
@@ -127,6 +129,11 @@ $(SYSAPPSTATIC):
 	$(CC) -x c $(THIS_APPSRC) $(APPOPTS) $(APPFLAGS) $(STATIC_CFLAGS) -lutil -o $(NAME)_static
 	@$(INSTALL) -v $(NAME)_static $(SYSBINDIR)
 	@$(RM) $(NAME)_static
+
+aga: shared
+	$(CC) -x c aga.c $(APPOPTS) $(APPFLAGS) $(SHARED_APP_FLAGS) -o $(NAME)
+	@$(INSTALL) -v $(NAME) $(SYSBINDIR)
+	@$(RM) $(NAME)
 
 headers: $(SYSINCDIR)/$(THIS_HEADER)
 
