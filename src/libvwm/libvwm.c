@@ -77,6 +77,9 @@ static VtString_T VtString;
 #define QUIT        -10
 #define TABWIDTH    8
 
+#define DOWN_DIR    1
+#define UP_DIR     -1
+
 #define DRAW        1
 #define DONOT_DRAW  0
 
@@ -287,7 +290,7 @@ struct vwm_win {
 };
 
 struct vwm_prop {
-  vwm_term   *term;
+  vwm_term  *term;
 
   char *tmpdir;
 
@@ -340,6 +343,32 @@ private int ustring_charlen (uchar c) {
   if (c < 0x80) return 1;
   if ((c & 0xe0) == 0xc0) return 2;
   return 3 + ((c & 0xf0) != 0xe0);
+}
+
+private char *ustring_character (utf8 c, char *buf, int *len) {
+  *len = 1;
+  if (c < 0x80) {
+    buf[0] = (char) c;
+  } else if (c < 0x800) {
+    buf[0] = (c >> 6) | 0xC0;
+    buf[1] = (c & 0x3F) | 0x80;
+    (*len)++;
+  } else if (c < 0x10000) {
+    buf[0] = (c >> 12) | 0xE0;
+    buf[1] = ((c >> 6) & 0x3F) | 0x80;
+    buf[2] = (c & 0x3F) | 0x80;
+    (*len) += 2;
+  } else if (c < 0x110000) {
+    buf[0] = (c >> 18) | 0xF0;
+    buf[1] = ((c >> 12) & 0x3F) | 0x80;
+    buf[2] = ((c >> 6) & 0x3F) | 0x80;
+    buf[3] = (c & 0x3F) | 0x80;
+    (*len) += 3;
+  } else
+    return 0;
+
+  buf[*len] = '\0';
+  return buf;
 }
 
 private int dir_is_directory (const char *name) {
@@ -1187,32 +1216,6 @@ private void vt_video_scroll_back (vwm_frame *frame, int numlines) {
   }
 }
 
-private char *ustring_character (utf8 c, char *buf, int *len) {
-  *len = 1;
-  if (c < 0x80) {
-    buf[0] = (char) c;
-  } else if (c < 0x800) {
-    buf[0] = (c >> 6) | 0xC0;
-    buf[1] = (c & 0x3F) | 0x80;
-    (*len)++;
-  } else if (c < 0x10000) {
-    buf[0] = (c >> 12) | 0xE0;
-    buf[1] = ((c >> 6) & 0x3F) | 0x80;
-    buf[2] = (c & 0x3F) | 0x80;
-    (*len) += 2;
-  } else if (c < 0x110000) {
-    buf[0] = (c >> 18) | 0xF0;
-    buf[1] = ((c >> 12) & 0x3F) | 0x80;
-    buf[2] = ((c >> 6) & 0x3F) | 0x80;
-    buf[3] = (c & 0x3F) | 0x80;
-    (*len) += 3;
-  } else
-    return 0;
-
-  buf[*len] = '\0';
-  return buf;
-}
-
 private void vt_video_add (vwm_frame *frame, utf8 c) {
   frame->videomem[frame->row_pos - 1][frame->col_pos - 1] = c;
   frame->videomem[frame->row_pos - 1][frame->col_pos - 1] |=
@@ -1477,19 +1480,20 @@ private vt_string *vt_keystate_print (vt_string *buf, int application) {
 private vt_string *vt_altcharset (vt_string *buf, int charset, int type) {
   switch (type) {
     case UK_CHARSET:
-      VtString.append_with_len (buf, STR_FMT (3, "\033%cA", (charset is G0 ? '(' : ')')), 3);
+      VtString.append_with_len (buf, STR_FMT (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case US_CHARSET:
-      VtString.append_with_len (buf, STR_FMT (3, "\033%cB", (charset is G0 ? '(' : ')')), 3);
+      VtString.append_with_len (buf, STR_FMT (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case GRAPHICS:
-      VtString.append_with_len (buf, STR_FMT (3, "\033%c0", (charset is G0 ? '(' : ')')), 3);
+      VtString.append_with_len (buf, STR_FMT (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
       break;
 
     default:  break;
   }
+  return buf;
 }
 
 private vt_string *vt_esc_scan (vwm_frame *, vt_string *, int);
@@ -2801,6 +2805,29 @@ private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int pa
   vwm_win_on_resize (win, draw);
 }
 
+private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int draw) {
+  if (NULL is frame->next and NULL is frame->prev)
+    return;
+
+  int idx = -1;
+
+  if (dir is DOWN_DIR) {
+    ifnot (NULL is frame->next)
+      idx = DListGetIdx (win, vwm_frame, frame->next);
+    else
+      idx = 0;
+  } else {
+    ifnot (NULL is frame->prev)
+      idx = DListGetIdx (win, vwm_frame, frame->prev);
+    else
+      idx = win->length - 1;
+  }
+
+  win->last_frame = frame;
+  DListSetCurrent (win, idx);
+  vwm_win_set_separators (win, draw);
+}
+
 private char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
   size_t num = (*name_gen / 26) + prelen;
   char *name = Alloc (num * sizeof (char *) + 1);
@@ -3151,9 +3178,8 @@ private int vwm_main (vwm_t *this) {
 
     frame = win->current;
 
-    memset (input_buf, 0, MAX_CHAR_LEN);
+    for (int i = 0; i < MAX_CHAR_LEN; i++) input_buf[i] = '\0';
 
-    utf8 c;
     if (FD_ISSET (STDIN_FILENO, &read_mask)) {
       if (0 < fd_read (STDIN_FILENO, input_buf, 1))
         if (QUIT is my.process_input (this, win, frame, input_buf)) {
@@ -3249,21 +3275,23 @@ getc_again:
       break;
 
     case 'n':
-      if (1) {
-        if (param > MAX_FRAMES) param = MAX_FRAMES;
-        ifnot (param) param = 1;
-        vwm_win *newwin = my.win.new (this, NULL, WinNewOpts (
+      ifnot (param)
+        param = 1;
+      else
+        if (param > MAX_FRAMES)
+          param = MAX_FRAMES;
+
+      my.win.new (this, NULL, WinNewOpts (
           .rows = $my(num_rows),
           .cols = $my(num_cols),
           .num_frames = param,
           .max_frames = MAX_FRAMES));
 
-        int idx = $my(length) - 1;
-        $my(last_win) = win;
-        DListSetCurrent ($myprop, idx);
-        win = $my(current);
-        vwm_win_draw (win);
-      }
+      $my(last_win) = win;
+      DListSetCurrent ($myprop, $my(length) - 1);
+      win = $my(current);
+      vwm_win_draw (win);
+
       break;
 
     case 'k':
@@ -3273,26 +3301,7 @@ getc_again:
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
-      if (NULL isnot frame->next or NULL isnot frame->prev) {
-        int idx = -1;
-
-        if (c is 'w' or c is ARROW_DOWN_KEY) {
-         ifnot (NULL is frame->next)
-           idx = DListGetIdx (win, vwm_frame, frame->next);
-         else
-           idx = 0;
-        } else {
-         ifnot (NULL is frame->prev)
-           idx = DListGetIdx (win, vwm_frame, frame->prev);
-         else
-           idx = win->length - 1;
-        }
-
-        win->last_frame = frame;
-        DListSetCurrent (win, idx);
-        vwm_win_set_separators (win, DRAW);
-      }
-
+      vwm_win_frame_change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_DIR : UP_DIR, DRAW);
       break;
 
     case ARROW_LEFT_KEY:
@@ -3320,9 +3329,11 @@ getc_again:
         else
           vwm_win_set_separators (win, DRAW);
         /* testing */
-        if (0 is strcmp (win->head->argv[0], "vedas"))
-          write (win->head->fd, ":redraw\r", 8);
+        if (NULL isnot win->head->argv[0])
+          if (0 is strcmp (win->head->argv[0], "vedas"))
+            write (win->head->fd, ":redraw\r", 8);
       }
+
       break;
 
     case '`':
@@ -3442,6 +3453,7 @@ public vwm_t *__init_vwm__ (void) {
           .frame_at = vwm_win_get_frame_at
         },
         .frame = (vwm_win_frame_self) {
+          .change = vwm_win_frame_change,
           .increase_size = vwm_win_frame_increase_size,
           .decrease_size = vwm_win_frame_decrease_size
         }

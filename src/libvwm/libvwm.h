@@ -173,6 +173,7 @@ typedef struct vwm_win_get_self {
 
 typedef struct vwm_win_frame_self {
   void
+    (*change)        (vwm_win *, vwm_frame *, int, int),
     (*increase_size) (vwm_win *, vwm_frame *, int, int),
     (*decrease_size) (vwm_win *, vwm_frame *, int, int);
 } vwm_win_frame_self;
