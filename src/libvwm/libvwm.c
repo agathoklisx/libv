@@ -63,10 +63,16 @@ static VtString_T VtString;
 #define PATH_MAX 4096  /* bytes in a path name */
 #endif
 
+#ifndef MAX_FRAMES
+#define MAX_FRAMES 3
+#endif
+
+#define MAX_CHAR_LEN 4
 #define MAX_ARGS    256
 #define MAX_TTYNAME 1024
 #define MAX_PARAMS  12
 #define MAX_SEQ_LEN 16
+
 #define BUFSIZE     4096
 #define QUIT        -10
 #define TABWIDTH    8
@@ -792,6 +798,175 @@ private void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
   $my(num_rows) = rows;
   $my(num_cols) = cols;
   $my(first_column) = first_col;
+}
+
+/* This is an extended version of the same function of the kilo editor at:
+ * https://github.com/antirez/kilo.git
+ *
+ * It should work the same, under xterm, rxvt-unicode, st and linux terminals.
+ * It also handles UTF8 byte sequences and it should return the integer represantation
+ * of such sequence
+ */
+
+private utf8 getkey (int infd) {
+  char c;
+  int n;
+  char buf[5];
+
+  while (0 == (n = fd_read (infd, buf, 1)));
+
+  if (n == -1) return -1;
+
+  c = buf[0];
+
+  switch (c) {
+    case ESCAPE_KEY:
+      if (0 == fd_read (infd, buf, 1))
+        return ESCAPE_KEY;
+
+      /* recent (revailed through CTRL-[other than CTRL sequence]) and unused */
+      if ('z' >= buf[0] && buf[0] >= 'a')
+        return 0;
+
+      if (buf[0] == ESCAPE_KEY /* probably alt->arrow-key */)
+        if (0 == fd_read (infd, buf, 1))
+          return 0;
+
+      if (buf[0] != '[' && buf[0] != 'O')
+        return 0;
+
+      if (0 == fd_read (infd, buf + 1, 1))
+        return ESCAPE_KEY;
+
+      if (buf[0] == '[') {
+        if ('0' <= buf[1] && buf[1] <= '9') {
+          if (0 == fd_read (infd, buf + 2, 1))
+            return ESCAPE_KEY;
+
+          if (buf[2] == '~') {
+            switch (buf[1]) {
+              case '1': return HOME_KEY;
+              case '2': return INSERT_KEY;
+              case '3': return DELETE_KEY;
+              case '4': return END_KEY;
+              case '5': return PAGE_UP_KEY;
+              case '6': return PAGE_DOWN_KEY;
+              case '7': return HOME_KEY;
+              case '8': return END_KEY;
+              default: return 0;
+            }
+          } else if (buf[1] == '1') {
+            if (fd_read (infd, buf, 1) == 0)
+              return ESCAPE_KEY;
+
+            switch (buf[2]) {
+              case '1': return FN_KEY(1);
+              case '2': return FN_KEY(2);
+              case '3': return FN_KEY(3);
+              case '4': return FN_KEY(4);
+              case '5': return FN_KEY(5);
+              case '7': return FN_KEY(6);
+              case '8': return FN_KEY(7);
+              case '9': return FN_KEY(8);
+              default: return 0;
+            }
+          } else if (buf[1] == '2') {
+            if (fd_read (infd, buf, 1) == 0)
+              return ESCAPE_KEY;
+
+            switch (buf[2]) {
+              case '0': return FN_KEY(9);
+              case '1': return FN_KEY(10);
+              case '3': return FN_KEY(11);
+              case '4': return FN_KEY(12);
+              default: return 0;
+            }
+          } else { /* CTRL_[key other than CTRL sequence] */
+                   /* lower case */
+            if (buf[2] == 'h')
+              return INSERT_KEY; /* sample/test (logically return 0) */
+            else
+              return 0;
+          }
+        } else if (buf[1] == '[') {
+          if (fd_read (infd, buf, 1) == 0)
+            return ESCAPE_KEY;
+
+          switch (buf[0]) {
+            case 'A': return FN_KEY(1);
+            case 'B': return FN_KEY(2);
+            case 'C': return FN_KEY(3);
+            case 'D': return FN_KEY(4);
+            case 'E': return FN_KEY(5);
+
+            default: return 0;
+          }
+        } else {
+          switch (buf[1]) {
+            case 'A': return ARROW_UP_KEY;
+            case 'B': return ARROW_DOWN_KEY;
+            case 'C': return ARROW_RIGHT_KEY;
+            case 'D': return ARROW_LEFT_KEY;
+            case 'H': return HOME_KEY;
+            case 'F': return END_KEY;
+            case 'P': return DELETE_KEY;
+
+            default: return 0;
+          }
+        }
+      } else if (buf[0] == 'O') {
+        switch (buf[1]) {
+          case 'A': return ARROW_UP_KEY;
+          case 'B': return ARROW_DOWN_KEY;
+          case 'C': return ARROW_RIGHT_KEY;
+          case 'D': return ARROW_LEFT_KEY;
+          case 'H': return HOME_KEY;
+          case 'F': return END_KEY;
+          case 'P': return FN_KEY(1);
+          case 'Q': return FN_KEY(2);
+          case 'R': return FN_KEY(3);
+          case 'S': return FN_KEY(4);
+
+          default: return 0;
+        }
+      }
+    break;
+
+  default:
+    if (c < 0) {
+      int len = ustring_charlen ((uchar) c);
+      utf8 code = 0;
+      code += (uchar) c;
+
+      int idx;
+      int invalid = 0;
+      char cc;
+
+      for (idx = 0; idx < len - 1; idx++) {
+        if (0 >= fd_read (infd, &cc, 1))
+          return -1;
+
+        if (isnotutf8 ((uchar) cc)) {
+          invalid = 1;
+        } else {
+          code <<= 6;
+          code += (uchar) cc;
+        }
+      }
+
+      if (invalid)
+        return -1;
+
+      code -= offsetsFromUTF8[len-1];
+      return code;
+    }
+
+    if (127 == c) return BACKSPACE_KEY;
+
+    return c;
+  }
+
+  return -1;
 }
 
 private void vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
@@ -2226,6 +2401,10 @@ private void vwm_frame_set_fd (vwm_frame *this, int fd) {
   this->fd = fd;
 }
 
+private int vwm_frame_get_fd (vwm_frame *this) {
+  return this->fd;
+}
+
 private void vwm_frame_kill_proc (vwm_frame *frame) {
   if (frame->pid is -1) return;
 
@@ -2477,6 +2656,149 @@ private void vwm_win_draw (vwm_win *this) {
 
   vt_write (render->bytes, stdout);
   VtString.release (render);
+}
+
+private void vwm_win_on_resize (vwm_win *win, int draw) {
+  int frow = 1;
+  vwm_frame *it = win->head;
+  while (it) {
+    vwm_frame_on_resize (it, it->new_rows, it->num_cols);
+    it->num_rows = it->new_rows;
+    it->last_row = it->num_rows;
+    it->first_row = frow;
+    frow += it->num_rows + 1;
+    if (it->argv[0] and it->pid isnot -1) {
+      struct winsize ws = {.ws_row = it->num_rows, .ws_col = it->num_cols};
+      ioctl (it->fd, TIOCSWINSZ, &ws);
+      kill (it->pid, SIGWINCH);
+    }
+
+    it = it->next;
+  }
+
+  if (draw)
+    vwm_win_draw (win);
+}
+
+private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
+  if (win->length is 1)
+    return;
+
+  int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
+
+  ifnot (param) param = 1;
+  if (param > min_rows) param = min_rows;
+
+  int num_lines;
+  int mod;
+
+  if (param is 1 or param is win->length - 1) {
+    num_lines = 1;
+    mod = 0;
+  } else if (param > win->length - 1) {
+    num_lines = param / (win->length - 1);
+    mod = param % (win->length - 1);
+  } else {
+    num_lines = (win->length - 1) / param;
+    mod = (win->length - 1) % param;
+  }
+
+  int orig_param = param;
+
+  vwm_frame *fr = win->head;
+  while (fr) {
+    fr->new_rows = fr->num_rows;
+    fr = fr->next;
+  }
+
+  fr = win->head;
+  int iter = 1;
+  while (fr and param and iter++ < ((win->length - 1) * 3)) {
+    if (frame is fr)
+      goto next_frame;
+
+    int num = num_lines;
+    while (fr->new_rows > 2 and num--) {
+      fr->new_rows = fr->new_rows - 1;
+      param--;
+    }
+
+    if (fr->new_rows is 2)
+      goto next_frame;
+
+    if (mod) {
+      fr->new_rows--;
+      param--;
+      mod--;
+    }
+
+    next_frame:
+      if (fr->next is NULL)
+        fr = win->head;
+      else
+        fr = fr->next;
+  }
+
+  frame->new_rows = frame->new_rows + (orig_param - param);
+  vwm_win_on_resize (win, draw);
+}
+
+private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
+  if (1 is win->length or frame->num_rows <= 2)
+    return;
+
+  if (frame->num_rows - param <= 2)
+    param = frame->num_rows - 2;
+
+  if (0 >= param)
+    param = 1;
+
+  int num_lines;
+  int mod;
+  if (param is 1 or param is win->length - 1) {
+    num_lines = 1;
+    mod = 0;
+  } else if (param > win->length - 1) {
+    num_lines = param / (win->length - 1);
+    mod = param % (win->length - 1);
+  } else {
+    num_lines = (win->length - 1) / param;
+    mod = (win->length - 1) % param;
+  }
+
+  vwm_frame *fr = win->head;
+  while (fr) {
+    fr->new_rows = fr->num_rows;
+    fr = fr->next;
+  }
+
+  int orig_param = param;
+
+  fr = win->head;
+  int iter = 1;
+  while (fr and param and iter++ < ((win->length - 1) * 3)) {
+    if (frame is fr)
+      goto next_frame;
+
+    fr->new_rows = fr->num_rows + num_lines;
+
+    param -= num_lines;
+
+    if (mod) {
+      fr->new_rows++;
+      param--;
+      mod--;
+    }
+
+  next_frame:
+    if (fr->next is NULL)
+      fr = win->head;
+    else
+      fr = fr->next;
+  }
+
+  frame->new_rows = frame->new_rows - (orig_param - param);
+  vwm_win_on_resize (win, draw);
 }
 
 private char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
@@ -2769,7 +3091,7 @@ private int vwm_main (vwm_t *this) {
   struct timeval *tv = NULL;
 
   char
-    input_buf[2],
+    input_buf[MAX_CHAR_LEN],
     output_buf[BUFSIZE];
 
   int
@@ -2829,7 +3151,9 @@ private int vwm_main (vwm_t *this) {
 
     frame = win->current;
 
-    input_buf[0] = '\0'; input_buf[1] = '\0';
+    memset (input_buf, 0, MAX_CHAR_LEN);
+
+    utf8 c;
     if (FD_ISSET (STDIN_FILENO, &read_mask)) {
       if (0 < fd_read (STDIN_FILENO, input_buf, 1))
         if (QUIT is my.process_input (this, win, frame, input_buf)) {
@@ -2879,174 +3203,6 @@ private int vwm_main (vwm_t *this) {
   return NOTOK;
 }
 
-/* This is an extended version of the same function of the kilo editor at:
- * https://github.com/antirez/kilo.git
- *
- * It should work the same, under xterm, rxvt-unicode, st and linux terminals.
- * It also handles UTF8 byte sequences and it should return the integer represantation
- * of such sequence */
-
-private utf8 getkey (int infd) {
-  char c;
-  int n;
-  char buf[5];
-
-  while (0 == (n = fd_read (infd, buf, 1)));
-
-  if (n == -1) return -1;
-
-  c = buf[0];
-
-  switch (c) {
-    case ESCAPE_KEY:
-      if (0 == fd_read (infd, buf, 1))
-        return ESCAPE_KEY;
-
-      /* recent (revailed through CTRL-[other than CTRL sequence]) and unused */
-      if ('z' >= buf[0] && buf[0] >= 'a')
-        return 0;
-
-      if (buf[0] == ESCAPE_KEY /* probably alt->arrow-key */)
-        if (0 == fd_read (infd, buf, 1))
-          return 0;
-
-      if (buf[0] != '[' && buf[0] != 'O')
-        return 0;
-
-      if (0 == fd_read (infd, buf + 1, 1))
-        return ESCAPE_KEY;
-
-      if (buf[0] == '[') {
-        if ('0' <= buf[1] && buf[1] <= '9') {
-          if (0 == fd_read (infd, buf + 2, 1))
-            return ESCAPE_KEY;
-
-          if (buf[2] == '~') {
-            switch (buf[1]) {
-              case '1': return HOME_KEY;
-              case '2': return INSERT_KEY;
-              case '3': return DELETE_KEY;
-              case '4': return END_KEY;
-              case '5': return PAGE_UP_KEY;
-              case '6': return PAGE_DOWN_KEY;
-              case '7': return HOME_KEY;
-              case '8': return END_KEY;
-              default: return 0;
-            }
-          } else if (buf[1] == '1') {
-            if (fd_read (infd, buf, 1) == 0)
-              return ESCAPE_KEY;
-
-            switch (buf[2]) {
-              case '1': return FN_KEY(1);
-              case '2': return FN_KEY(2);
-              case '3': return FN_KEY(3);
-              case '4': return FN_KEY(4);
-              case '5': return FN_KEY(5);
-              case '7': return FN_KEY(6);
-              case '8': return FN_KEY(7);
-              case '9': return FN_KEY(8);
-              default: return 0;
-            }
-          } else if (buf[1] == '2') {
-            if (fd_read (infd, buf, 1) == 0)
-              return ESCAPE_KEY;
-
-            switch (buf[2]) {
-              case '0': return FN_KEY(9);
-              case '1': return FN_KEY(10);
-              case '3': return FN_KEY(11);
-              case '4': return FN_KEY(12);
-              default: return 0;
-            }
-          } else { /* CTRL_[key other than CTRL sequence] */
-                   /* lower case */
-            if (buf[2] == 'h')
-              return INSERT_KEY; /* sample/test (logically return 0) */
-            else
-              return 0;
-          }
-        } else if (buf[1] == '[') {
-          if (fd_read (infd, buf, 1) == 0)
-            return ESCAPE_KEY;
-
-          switch (buf[0]) {
-            case 'A': return FN_KEY(1);
-            case 'B': return FN_KEY(2);
-            case 'C': return FN_KEY(3);
-            case 'D': return FN_KEY(4);
-            case 'E': return FN_KEY(5);
-
-            default: return 0;
-          }
-        } else {
-          switch (buf[1]) {
-            case 'A': return ARROW_UP_KEY;
-            case 'B': return ARROW_DOWN_KEY;
-            case 'C': return ARROW_RIGHT_KEY;
-            case 'D': return ARROW_LEFT_KEY;
-            case 'H': return HOME_KEY;
-            case 'F': return END_KEY;
-            case 'P': return DELETE_KEY;
-
-            default: return 0;
-          }
-        }
-      } else if (buf[0] == 'O') {
-        switch (buf[1]) {
-          case 'A': return ARROW_UP_KEY;
-          case 'B': return ARROW_DOWN_KEY;
-          case 'C': return ARROW_RIGHT_KEY;
-          case 'D': return ARROW_LEFT_KEY;
-          case 'H': return HOME_KEY;
-          case 'F': return END_KEY;
-          case 'P': return FN_KEY(1);
-          case 'Q': return FN_KEY(2);
-          case 'R': return FN_KEY(3);
-          case 'S': return FN_KEY(4);
-
-          default: return 0;
-        }
-      }
-    break;
-
-  default:
-    if (c < 0) {
-      int len = ustring_charlen ((uchar) c);
-      utf8 code = 0;
-      code += (uchar) c;
-
-      int idx;
-      int invalid = 0;
-      char cc;
-
-      for (idx = 0; idx < len - 1; idx++) {
-        if (0 >= fd_read (infd, &cc, 1))
-          return -1;
-
-        if (isnotutf8 ((uchar) cc)) {
-          invalid = 1;
-        } else {
-          code <<= 6;
-          code += (uchar) cc;
-        }
-      }
-
-      if (invalid)
-        return -1;
-
-      code -= offsetsFromUTF8[len-1];
-      return code;
-    }
-
-    if (127 == c) return BACKSPACE_KEY;
-
-    return c;
-  }
-
-  return -1;
-}
-
 private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char *input_buf) {
   if (input_buf[0] isnot MODE_KEY) {
     fd_write (frame->fd, input_buf, 1);
@@ -3063,6 +3219,9 @@ getc_again:
   if (-1 is c) return OK;
 
   switch (c) {
+    case ESCAPE_KEY:
+      break;
+
     case MODE_KEY:
       input_buf[0] = MODE_KEY; input_buf[1] = '\0';
       fd_write (frame->fd, input_buf, 1);
@@ -3071,16 +3230,40 @@ getc_again:
     case 'q':
       return QUIT;
 
+    case '!':
     case 'c':
       if (frame->pid isnot -1)
         break;
 
-      if (NULL is frame->argv[0]) {
-        frame->argv[0] = DEFAULT_APP;
+      if (c is '!') {
+        frame->argv[0] = SHELL;
         frame->argv[1] = NULL;
+      } else {
+        if (NULL is frame->argv[0]) {
+          frame->argv[0] = DEFAULT_APP;
+          frame->argv[1] = NULL;
+        }
       }
 
       my.frame.fork (this, frame);
+      break;
+
+    case 'n':
+      if (1) {
+        if (param > MAX_FRAMES) param = MAX_FRAMES;
+        ifnot (param) param = 1;
+        vwm_win *newwin = my.win.new (this, NULL, WinNewOpts (
+          .rows = $my(num_rows),
+          .cols = $my(num_cols),
+          .num_frames = param,
+          .max_frames = MAX_FRAMES));
+
+        int idx = $my(length) - 1;
+        $my(last_win) = win;
+        DListSetCurrent ($myprop, idx);
+        win = $my(current);
+        vwm_win_draw (win);
+      }
       break;
 
     case 'k':
@@ -3179,125 +3362,11 @@ getc_again:
       break;
 
     case '+':
-      if (win->length isnot 1) {
-
-        int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
-
-        ifnot (param) param = 1;
-        if (param > min_rows) param = min_rows;
-
-        int num_lines;
-        int mod;
-
-        if (param is 1 or param is win->length - 1) {
-          num_lines = 1;
-          mod = 0;
-        } else if (param > win->length - 1) {
-          num_lines = param / (win->length - 1);
-          mod = param % (win->length - 1);
-        } else {
-          num_lines = (win->length - 1) / param;
-          mod = (win->length - 1) % param;
-        }
-
-        int orig_param = param;
-
-        vwm_frame *fr = win->head;
-        while (fr) {
-          fr->new_rows = fr->num_rows;
-          fr = fr->next;
-        }
-
-        fr = win->head;
-        int iter = 1;
-        while (fr and param and iter++ < ((win->length - 1) * 3)) {
-          if (frame is fr)
-            goto next_plus_frame;
-
-          int num = num_lines;
-          while (fr->new_rows > 2 and num--) {
-            fr->new_rows = fr->new_rows - 1;
-            param--;
-          }
-
-          if (fr->new_rows is 2)
-            goto next_plus_frame;
-
-          if (mod) {
-            fr->new_rows--;
-            param--;
-            mod--;
-          }
-
-        next_plus_frame:
-          if (fr->next is NULL)
-            fr = win->head;
-          else
-            fr = fr->next;
-        }
-
-        frame->new_rows = frame->new_rows + (orig_param - param);
-        goto the_resize;
-      }
+      vwm_win_frame_increase_size (win, frame, param, DRAW);
       break;
 
-    case '-': {
-      if (1 is win->length or frame->num_rows <= 2)
-        break;
-
-      if (frame->num_rows - param <= 2)
-        param = frame->num_rows - 2;
-
-      if (0 >= param)
-        param = 1;
-
-      int num_lines;
-      int mod;
-      if (param is 1 or param is win->length - 1) {
-        num_lines = 1;
-        mod = 0;
-      } else if (param > win->length - 1) {
-        num_lines = param / (win->length - 1);
-        mod = param % (win->length - 1);
-      } else {
-        num_lines = (win->length - 1) / param;
-        mod = (win->length - 1) % param;
-      }
-
-      vwm_frame *fr = win->head;
-      while (fr) {
-        fr->new_rows = fr->num_rows;
-        fr = fr->next;
-      }
-
-      int orig_param = param;
-
-      fr = win->head;
-      int iter = 1;
-      while (fr and param and iter++ < ((win->length - 1) * 3)) {
-        if (frame is fr)
-          goto next_minus_frame;
-
-        fr->new_rows = fr->num_rows + num_lines;
-
-        param -= num_lines;
-
-        if (mod) {
-          fr->new_rows++;
-          param--;
-          mod--;
-        }
-
-      next_minus_frame:
-        if (fr->next is NULL)
-          fr = win->head;
-        else
-          fr = fr->next;
-      }
-
-      frame->new_rows = frame->new_rows - (orig_param - param);
-      goto the_resize;
-    }
+    case '-':
+      vwm_win_frame_decrease_size (win, frame, param, DRAW);
       break;
 
     case '0':
@@ -3315,28 +3384,6 @@ getc_again:
       goto getc_again;
   }
 
-  return OK;
-
-the_resize: {}
-
-  int frow = 1;
-  vwm_frame *it = win->head;
-  while (it) {
-    vwm_frame_on_resize (it, it->new_rows, it->num_cols);
-    it->num_rows = it->new_rows;
-    it->last_row = it->num_rows;
-    it->first_row = frow;
-    frow += it->num_rows + 1;
-    if (it->argv[0] and it->pid isnot -1) {
-      struct winsize ws = {.ws_row = it->num_rows, .ws_col = it->num_cols};
-      ioctl (it->fd, TIOCSWINSZ, &ws);
-      kill (it->pid, SIGWINCH);
-    }
-
-    it = it->next;
-  }
-
-  vwm_win_draw (win);
   return OK;
 }
 
@@ -3370,6 +3417,7 @@ public vwm_t *__init_vwm__ (void) {
       .main = vwm_main,
       .process_input = vwm_process_input,
       .process_output = vt_process_output,
+      .getkey = getkey,
       .term = (vwm_term_self) {
         .new = vwm_term_new,
         .release = vwm_term_release,
@@ -3393,11 +3441,18 @@ public vwm_t *__init_vwm__ (void) {
         .get = (vwm_win_get_self) {
           .frame_at = vwm_win_get_frame_at
         },
+        .frame = (vwm_win_frame_self) {
+          .increase_size = vwm_win_frame_increase_size,
+          .decrease_size = vwm_win_frame_decrease_size
+        }
       },
       .frame = (vwm_frame_self) {
         .new = vwm_win_frame_new,
         .release = vwm_win_frame_release,
         .fork = vwm_frame_fork,
+        .get = (vwm_frame_get_self) {
+          .fd = vwm_frame_get_fd
+        },
         .set = (vwm_frame_set_self) {
           .fd = vwm_frame_set_fd,
           .log = vwm_frame_set_log,

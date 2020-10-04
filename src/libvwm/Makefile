@@ -93,16 +93,16 @@ LIBFLAGS += -DSHELL='"$(SHELL)"'
 LIBFLAGS += -DTMPDIR='"$(SYSTMPDIR)"'
 LIBFLAGS += -DDEFAULT_APP='"$(DEFAULT_APP)"'
 
-all: shared app-shared
+all: shared-lib app-shared
 
 prereq: Env
 
-shared: prereq headers $(THIS_SHAREDLIB)
+shared-lib: prereq headers $(THIS_SHAREDLIB)
 $(THIS_SHAREDLIB):
 	$(CC) -x c $(THIS_LIBSRC) $(LIBFLAGS) $(SHARED_CFLAGS) -o $(THIS_SHAREDLIB)
 	@$(LN_S) -vf $(THIS_SHAREDLIB) $(SYSLIBDIR)/lib$(THIS_LIBNAME).so
 
-static: prereq headers $(THIS_STATICLIB)
+static-lib: prereq headers $(THIS_STATICLIB)
 $(THIS_STATICLIB):
 	$(CC) -x c $(THIS_LIBSRC) $(LIBFLAGS) $(STATIC_CFLAGS) -c -o $(THIS_LIB).o
 	@$(AR) $(THIS_STATICLIB) $(THIS_LIB).o
@@ -118,19 +118,19 @@ THIS_APPSRC  := $(NAME).c
 
 app: app-shared app-static
 
-app-shared: shared $(SYSAPPSHARED)
+app-shared: shared-lib $(SYSAPPSHARED)
 $(SYSAPPSHARED):
 	$(CC) -x c $(THIS_APPSRC) $(APPOPTS) $(APPFLAGS) $(SHARED_APP_FLAGS) -o $(NAME)
 	@$(INSTALL) -v $(NAME) $(SYSBINDIR)
 	@$(RM) $(NAME)
 
-app-static: static $(SYSAPPSTATIC)
+app-static: static-lib $(SYSAPPSTATIC)
 $(SYSAPPSTATIC):
 	$(CC) -x c $(THIS_APPSRC) $(APPOPTS) $(APPFLAGS) $(STATIC_CFLAGS) -lutil -o $(NAME)_static
 	@$(INSTALL) -v $(NAME)_static $(SYSBINDIR)
 	@$(RM) $(NAME)_static
 
-aga: shared
+aga: shared-lib
 	$(CC) -x c aga.c $(APPOPTS) $(APPFLAGS) $(SHARED_APP_FLAGS) -o $(NAME)
 	@$(INSTALL) -v $(NAME) $(SYSBINDIR)
 	@$(RM) $(NAME)

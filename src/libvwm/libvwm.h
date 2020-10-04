@@ -57,7 +57,9 @@
 #define $myprop this->prop
 #endif
 
+#ifndef bytelen
 #define bytelen strlen
+#endif
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
@@ -134,6 +136,10 @@ typedef struct vwm_tern_self {
 
 } vwm_term_self;
 
+typedef struct vwm_frame_get_self {
+  int (*fd) (vwm_frame *);
+} vwm_frame_get_self;
+
 typedef struct vwm_frame_set_self {
   void
     (*fd) (vwm_frame *, int),
@@ -144,6 +150,7 @@ typedef struct vwm_frame_set_self {
 } vwm_frame_set_self;
 
 typedef struct vwm_frame_self {
+  vwm_frame_get_self get;
   vwm_frame_set_self set;
 
   void (*release) (vwm_win *, int);
@@ -164,9 +171,16 @@ typedef struct vwm_win_get_self {
   vwm_frame *(*frame_at) (vwm_win *, int);
 } vwm_win_get_self;
 
+typedef struct vwm_win_frame_self {
+  void
+    (*increase_size) (vwm_win *, vwm_frame *, int, int),
+    (*decrease_size) (vwm_win *, vwm_frame *, int, int);
+} vwm_win_frame_self;
+
 typedef struct vwm_win_self {
   vwm_win_set_self set;
   vwm_win_get_self get;
+  vwm_win_frame_self frame;
 
   void
     (*release) (vwm_t *, vwm_win *);
@@ -204,6 +218,8 @@ typedef struct vwm_self {
   int
     (*main) (vwm_t *),
     (*process_input) (vwm_t *, vwm_win *, vwm_frame *, char *);
+
+  utf8 (*getkey) (int);
 
   void
     (*process_output) (vwm_frame *, char *, int);

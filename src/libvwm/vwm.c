@@ -18,7 +18,7 @@ int main (int argc, char **argv) {
   my.set.size (this, rows, cols, 1);
 
   vwm_win *win = my.win.new (this, "v", WinNewOpts (
-    .rows =rows,
+    .rows = rows,
     .cols = cols,
     .num_frames = 2,
     .max_frames = 2));
