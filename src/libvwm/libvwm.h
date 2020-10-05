@@ -65,6 +65,15 @@ typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef signed int utf8;
 
+#define DOWN_POS    2
+#define NEXT_POS    1
+#define LAST_POS    0
+#define PREV_POS   -1
+#define UP_POS     -2
+
+#define DRAW        1
+#define DONOT_DRAW  0
+
 typedef struct vt_string {
   size_t
     mem_size,
@@ -98,6 +107,7 @@ typedef struct win_opts {
   int
     rows,
     cols,
+    focus,
     first_row,
     first_col,
     num_frames,
@@ -107,6 +117,7 @@ typedef struct win_opts {
 #define WinNewOpts(...) (win_opts) {  \
   .rows = 24,                         \
   .cols = 78,                         \
+  .focus = 0,                         \
   .first_row = 1,                     \
   .first_col = 1,                     \
   .num_frames = 1,                    \
@@ -174,8 +185,11 @@ typedef struct vwm_win_get_self {
 typedef struct vwm_win_frame_self {
   void
     (*change)        (vwm_win *, vwm_frame *, int, int),
+    (*set_size)      (vwm_win *, vwm_frame *, int, int),
     (*increase_size) (vwm_win *, vwm_frame *, int, int),
     (*decrease_size) (vwm_win *, vwm_frame *, int, int);
+
+  int (*edit_log) (vwm_t *, vwm_win *, vwm_frame *);
 } vwm_win_frame_self;
 
 typedef struct vwm_win_self {
@@ -184,6 +198,7 @@ typedef struct vwm_win_self {
   vwm_win_frame_self frame;
 
   void
+    (*change) (vwm_t *, vwm_win *, int, int),
     (*release) (vwm_t *, vwm_win *);
 
   int

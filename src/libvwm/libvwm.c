@@ -67,6 +67,7 @@ static VtString_T VtString;
 #define MAX_FRAMES 3
 #endif
 
+#define MIN_ROWS 2
 #define MAX_CHAR_LEN 4
 #define MAX_ARGS    256
 #define MAX_TTYNAME 1024
@@ -76,12 +77,6 @@ static VtString_T VtString;
 #define BUFSIZE     4096
 #define QUIT        -10
 #define TABWIDTH    8
-
-#define DOWN_DIR    1
-#define UP_DIR     -1
-
-#define DRAW        1
-#define DONOT_DRAW  0
 
 #define ISDIGIT(c_)     ('0' <= (c_) && (c_) <= '9')
 #define IS_UTF8(c_)     (((c_) & 0xC0) == 0x80)
@@ -2684,11 +2679,15 @@ private void vwm_win_on_resize (vwm_win *win, int draw) {
     vwm_win_draw (win);
 }
 
+private int vwm_win_min_rows (vwm_win *win) {
+  return win->num_rows - (win->length - win->num_separators - (win->length * 2));
+}
+
 private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
   if (win->length is 1)
     return;
 
-  int min_rows = win->num_rows - (win->length - win->num_separators - (win->length * 2));
+  int min_rows = vwm_win_min_rows (win);
 
   ifnot (param) param = 1;
   if (param > min_rows) param = min_rows;
@@ -2748,7 +2747,7 @@ private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int pa
 }
 
 private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
-  if (1 is win->length or frame->num_rows <= 2)
+  if (1 is win->length or frame->num_rows <= MIN_ROWS)
     return;
 
   if (frame->num_rows - param <= 2)
@@ -2805,13 +2804,23 @@ private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int pa
   vwm_win_on_resize (win, draw);
 }
 
+private void vwm_win_frame_set_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
+  if (param is frame->num_rows or 0 >= param)
+    return;
+
+  if (param > frame->num_rows)
+    vwm_win_frame_increase_size (win, frame, param - frame->num_rows, draw);
+  else
+    vwm_win_frame_decrease_size (win, frame, frame->num_rows - param, draw);
+}
+
 private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int draw) {
   if (NULL is frame->next and NULL is frame->prev)
     return;
 
   int idx = -1;
 
-  if (dir is DOWN_DIR) {
+  if (dir is DOWN_POS) {
     ifnot (NULL is frame->next)
       idx = DListGetIdx (win, vwm_frame, frame->next);
     else
@@ -2826,6 +2835,76 @@ private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int 
   win->last_frame = frame;
   DListSetCurrent (win, idx);
   vwm_win_set_separators (win, draw);
+}
+
+private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
+  if ($my(length) is 1)
+    return;
+
+  int idx = -1;
+  switch (dir) {
+    case LAST_POS:
+      if ($my(last_win) is win)
+        return;
+
+      idx = DListGetIdx ($myprop, vwm_win, $my(last_win));
+      break;
+
+    case NEXT_POS:
+      ifnot (NULL is win->next)
+        idx = DListGetIdx ($myprop, vwm_win, win->next);
+      else
+        idx = 0;
+      break;
+
+    case PREV_POS:
+      ifnot (NULL is win->prev)
+        idx = DListGetIdx ($myprop, vwm_win, win->prev);
+      else
+        idx = $my(length) - 1;
+      break;
+
+    default:
+      return;
+  }
+
+  $my(last_win) = win;
+  DListSetCurrent ($myprop, idx);
+  my.term.screen.clear ($my(term));
+  win = $my(current);
+
+  if (draw) {
+    if (win->is_initialized)
+      vwm_win_draw (win);
+    else
+      vwm_win_set_separators (win, DRAW);
+  } else
+    vwm_win_set_separators (win, DONOT_DRAW);
+
+  /* testing */
+  if (NULL isnot win->head->argv[0])
+    if (0 is strcmp (win->head->argv[0], "vedas"))
+      write (win->head->fd, ":redraw\r", 8);
+}
+
+private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame) {
+  if (frame->logfile is NULL)
+    return NOTOK;
+
+  char *argv[] = {EDITOR, frame->logfile, NULL};
+  int len;
+
+  for (int i = 0; i < frame->num_rows; i++) {
+    char buf[(frame->num_cols * 3) + 2];
+    len = vt_video_line_to_str (frame->videomem[i], buf,
+    frame->num_cols);
+    write (frame->logfd, buf, len);
+  }
+
+  vwm_spawn (this, argv);
+  vt_video_add_log_lines (frame);
+  vwm_win_draw (win);
+  return OK;
 }
 
 private char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
@@ -2905,6 +2984,9 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
 
   win->last_frame = win->head;
 
+  if (opts.focus)
+    DListSetCurrent ($myprop, $my(length) - 1);
+
   return win;
 }
 
@@ -2931,7 +3013,7 @@ private void fd_set_size (int fd, int rows, int cols) {
   ioctl (fd, TIOCSWINSZ, &wsiz);
 }
 
-private int vt_spawn (vwm_t *this, char **argv) {
+private int vwm_spawn (vwm_t *this, char **argv) {
   int status = NOTOK;
   pid_t pid;
 
@@ -3101,7 +3183,7 @@ private void vwm_exit_signal (int sig) {
 
 private int vwm_main (vwm_t *this) {
   ifnot ($my(length)) return OK;
-  ifnull ($my(current))
+  if (NULL is $my(current))
     $my(current) = $my(head);
 
   setbuf (stdin, NULL);
@@ -3301,75 +3383,19 @@ getc_again:
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
-      vwm_win_frame_change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_DIR : UP_DIR, DRAW);
+      vwm_win_frame_change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DRAW);
       break;
 
     case ARROW_LEFT_KEY:
     case ARROW_RIGHT_KEY:
-      if ($my(length) isnot 1) {
-        int idx = -1;
-        if (c is ARROW_RIGHT_KEY) {
-          ifnot (NULL is win->next)
-            idx = DListGetIdx ($myprop, vwm_win, win->next);
-          else
-            idx = 0;
-        } else {
-          ifnot (NULL is win->prev)
-            idx = DListGetIdx ($myprop, vwm_win, win->prev);
-          else
-            idx = $my(length) - 1;
-        }
-
-        $my(last_win) = win;
-        DListSetCurrent ($myprop, idx);
-        my.term.screen.clear ($my(term));
-        win = $my(current);
-        if (win->is_initialized)
-          vwm_win_draw (win);
-        else
-          vwm_win_set_separators (win, DRAW);
-        /* testing */
-        if (NULL isnot win->head->argv[0])
-          if (0 is strcmp (win->head->argv[0], "vedas"))
-            write (win->head->fd, ":redraw\r", 8);
-      }
-
-      break;
-
     case '`':
-      if ($my(last_win) isnot win) {
-        int idx = DListGetIdx ($myprop, vwm_win, $my(last_win));
-        $my(last_win) = win;
-        DListSetCurrent ($myprop, idx);
-        my.term.screen.clear ($my(term));
-        win = $my(current);
-        if (win->is_initialized)
-          vwm_win_draw (win);
-        else
-          vwm_win_set_separators (win, DRAW);
-
-        /* testing */
-        if (0 is strcmp (win->head->argv[0], "vedas"))
-          write (win->head->fd, ":redraw\r", 8);
-      }
+      vwm_win_change (this, win,
+          (c is ARROW_RIGHT_KEY) ? NEXT_POS :
+          (c is '`') ? LAST_POS : PREV_POS, DRAW);
       break;
 
     case 'e':
-      if (frame->logfile isnot NULL) {
-        char *argv[] = {EDITOR, frame->logfile, NULL};
-        int len;
-
-        for (int i = 0; i < frame->num_rows; i++) {
-          char buf[(frame->num_cols * 3) + 2];
-          len = vt_video_line_to_str (frame->videomem[i], buf,
-              frame->num_cols);
-          write (frame->logfd, buf, len);
-        }
-
-        vt_spawn (this, argv);
-        vt_video_add_log_lines (frame);
-        vwm_win_draw (win);
-      }
+      vwm_win_frame_edit_log (this, win, frame);
       break;
 
     case '+':
@@ -3378,6 +3404,10 @@ getc_again:
 
     case '-':
       vwm_win_frame_decrease_size (win, frame, param, DRAW);
+      break;
+
+    case '=':
+      vwm_win_frame_set_size (win, frame, param, DRAW);
       break;
 
     case '0':
@@ -3444,6 +3474,7 @@ public vwm_t *__init_vwm__ (void) {
       },
       .win = (vwm_win_self) {
         .new = vwm_win_new,
+        .change = vwm_win_change,
         .release = vwm_win_release,
         .frame_rows = vwm_win_frame_rows,
         .set = (vwm_win_set_self) {
@@ -3454,6 +3485,8 @@ public vwm_t *__init_vwm__ (void) {
         },
         .frame = (vwm_win_frame_self) {
           .change = vwm_win_frame_change,
+          .edit_log = vwm_win_frame_edit_log,
+          .set_size = vwm_win_frame_set_size,
           .increase_size = vwm_win_frame_increase_size,
           .decrease_size = vwm_win_frame_decrease_size
         }

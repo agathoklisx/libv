@@ -277,3 +277,6 @@ do {                                                                \
     fclose (fp_);                                         \
   }                                                       \
 })
+
+
+private int vwm_spawn (vwm_t *, char **);

@@ -41,18 +41,20 @@ By default the `mode' key is CTRL-\.
 
 Default Key bindings:
 
-MODE_KEY-q: quit the application  
-MODE_KEY-k: kill the current procedure in the current frame  
-MODE_KEY-!: open the default shell (by default zsh)  
-MODE_KEY-c: open the default application (by default zsh)  
-MODE_KEY-[up|down|w]: switch to the upper|lower frame respectively  
+MODE_KEY-q           : quit the application  
+MODE_KEY-k           : kill the current procedure in the current frame  
+MODE_KEY-!           : open the default shell (by default zsh)  
+MODE_KEY-c           : open the default application (by default zsh)  
+MODE_KEY-[up|down|w] : switch to the upper|lower frame respectively  
 MODE_KEY-[left|right]: switch to the prev|next window respectively  
-MODE_KEY-`: switch to the previously focused window  
-MODE_KEY-[count]+: increase the size of the current frame (default count 1)  
-MODE_KEY-[count]-: decrease the size of the current frame (default count 1)  
-MODE_KEY-[count]-n: create and switch to a new window with `count' frames (default 1)    
-MODE_KEY-MODE_KEY: return the MODE_KEY to the application  
-MODE_KEY-ESCAPE_KEY: return with no action  
+MODE_KEY-`           : switch to the previously focused window  
+MODE_KEY-[param]+    : increase the size of the current frame (default count 1)  
+MODE_KEY-[param]-    : decrease the size of the current frame (default count 1)  
+MODE_KEY-[param]=    : set the lines (param) of the current frame  
+MODE_KEY-[param]n    : create and switch to a new window with `count' frames (default 1)    
+MODE_KEY-e           : edit the log file (if it's has been set)  
+MODE_KEY-MODE_KEY    : return the MODE_KEY to the application  
+MODE_KEY-ESCAPE_KEY  : return with no action  
 
 BUGS and missing functionality:
 
