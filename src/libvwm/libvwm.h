@@ -205,7 +205,8 @@ typedef struct vwm_win_self {
     (*release) (vwm_t *, vwm_win *);
 
   int
-    (*frame_rows) (vwm_win *, int, int *);
+    (*frame_rows) (vwm_win *, int, int *),
+    (*delete_frame) (vwm_t *, vwm_win *, vwm_frame *, int);
 
   vwm_frame *(*add_frame) (vwm_t *, vwm_win *, int, char **, int);
   vwm_win *(*new) (vwm_t *, char *, win_opts);

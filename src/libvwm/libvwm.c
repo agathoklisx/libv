@@ -2566,11 +2566,41 @@ private vwm_frame *vwm_win_add_frame (vwm_t *this, vwm_win *win, int argc, char 
   return frame;
 }
 
+private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, int draw) {
+  ifnot (win->length)
+    return OK;
+
+  win->num_separators--;
+
+  if (1 is win->length) {
+    my.frame.release (win, 0);
+  } else {
+    int idx = DListGetIdx (win, vwm_frame, frame);
+    my.frame.release (win, idx);
+
+    int frame_rows = 0;
+    int mod = my.win.frame_rows (win, win->length, &frame_rows);
+    int
+      num_rows = frame_rows + mod,
+      first_row = win->first_row;
+
+    frame = win->head;
+    while (frame) {
+      frame->new_rows = num_rows;
+      first_row += num_rows + 1;
+      num_rows = frame_rows;
+      frame = frame->next;
+    }
+    vwm_win_on_resize (win, draw);
+  }
+
+  return OK;
+}
+
 private void vwm_win_frame_release (vwm_win *this, int idx) {
   vwm_frame *frame = DListPopAt (this, vwm_frame, idx);
 
   if (NULL is frame) return;
-
 
   ifnot (NULL == frame->logfile) {
     if (frame->remove_log)
@@ -3292,10 +3322,22 @@ private int vwm_main (vwm_t *this) {
   }
 
   for (;;) {
+    win = $my(current);
+    if (NULL is win)
+      break;
+
+    ifnot (win->length) {
+      if (1 is $my(length))
+        break;
+
+      my.win.change (this, win, PREV_POS, DONOT_DRAW);
+      my.win.release (this, win);
+      win = $my(current);
+    }
+
     if ($my(need_resize))
       vwm_handle_sigwinch (this);
 
-    win = $my(current);
     my.win.set.frame (win, win->current);
 
     maxfd = 1;
@@ -3450,16 +3492,20 @@ getc_again:
       vwm_frame_kill_proc (frame);
       break;
 
+    case 'd':
+      my.win.delete_frame (this, win, frame, DRAW);
+      break;
+
     case 's':
       my.win.add_frame (this, win, 0, NULL, DRAW);
       break;
 
     case 'S': {
-        utf8 c = my.getkey (STDIN_FILENO);
+        utf8 w = my.getkey (STDIN_FILENO);
         char *argv[] = {NULL, NULL};
         int argc = 1;
 
-        switch (c) {
+        switch (w) {
           case '!':
             argv[0] = $my(shell)->bytes;
             break;
@@ -3578,6 +3624,7 @@ public vwm_t *__init_vwm__ (void) {
         .release = vwm_win_release,
         .add_frame = vwm_win_add_frame,
         .frame_rows = vwm_win_frame_rows,
+        .delete_frame = vwm_win_delete_frame,
         .set = (vwm_win_set_self) {
           .frame = vwm_win_set_frame
         },
