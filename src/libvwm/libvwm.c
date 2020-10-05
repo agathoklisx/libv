@@ -289,6 +289,10 @@ struct vwm_prop {
 
   char *tmpdir;
 
+  vt_string
+    *shell,
+    *editor;
+
   int
     name_gen,
     num_rows,
@@ -621,6 +625,23 @@ private vt_string *vt_string_new (size_t size) {
   return this;
 }
 
+private vt_string *vt_string_new_with_len (const char *bytes, size_t len) {
+  vt_string *new = Alloc (sizeof (vt_string));
+  size_t sz = string_align (len + 1);
+  char *buf = Alloc (sz);
+  byte_cp (buf, bytes, len);
+  buf[len] = '\0';
+  new->bytes = buf;
+  new->num_bytes = len;
+  new->mem_size = sz;
+  return new;
+}
+
+private vt_string *vt_string_new_with (const char *bytes) {
+  size_t len = (NULL is bytes ? 0 : bytelen (bytes));
+  return vt_string_new_with_len (bytes, len); /* this succeeds even if bytes is NULL */
+}
+
 private void vt_string_release (vt_string *this) {
   free (this->bytes);
   free (this);
@@ -658,6 +679,8 @@ private vt_string *vt_string_append_byte (vt_string *this, char c) {
 public VtString_T __init_vt_string__ (void) {
   return (VtString_T) {
     .new = vt_string_new,
+    .new_with = vt_string_new_with,
+    .new_with_len = vt_string_new_with_len,
     .release = vt_string_release,
     .clear = vt_string_clear,
     .append = vt_string_append,
@@ -822,6 +845,22 @@ private void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
   $my(num_rows) = rows;
   $my(num_cols) = cols;
   $my(first_column) = first_col;
+}
+
+private void vwm_set_editor (vwm_t *this, char *editor) {
+  if (NULL is editor) return;
+  size_t len = bytelen (editor);
+  ifnot (len) return;
+  VtString.clear ($my(editor));
+  VtString.append_with_len ($my(editor), editor, len);
+}
+
+private void vwm_set_shell (vwm_t *this, char *shell) {
+  if (NULL is shell) return;
+  size_t len = bytelen (shell);
+  ifnot (len) return;
+  VtString.clear ($my(shell));
+  VtString.append_with_len ($my(shell), shell, len);
 }
 
 /* This is an extended version of the same function of the kilo editor at:
@@ -2891,7 +2930,7 @@ private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame)
   if (frame->logfile is NULL)
     return NOTOK;
 
-  char *argv[] = {EDITOR, frame->logfile, NULL};
+  char *argv[] = {$my(editor)->bytes, frame->logfile, NULL};
   int len;
 
   for (int i = 0; i < frame->num_rows; i++) {
@@ -3344,7 +3383,7 @@ getc_again:
         break;
 
       if (c is '!') {
-        frame->argv[0] = SHELL;
+        frame->argv[0] = $my(shell)->bytes;
         frame->argv[1] = NULL;
       } else {
         if (NULL is frame->argv[0]) {
@@ -3446,7 +3485,6 @@ mutable public void __alloc_error_handler__ (int err, size_t size,
 
 
 public vwm_t *__init_vwm__ (void) {
-
   AllocErrorHandler = __alloc_error_handler__;
   VtString = __init_vt_string__ ();
 
@@ -3512,6 +3550,8 @@ public vwm_t *__init_vwm__ (void) {
       },
       .set = (vwm_set_self) {
         .size = vwm_set_size,
+        .shell =  vwm_set_shell,
+        .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir
       }
     },
@@ -3519,6 +3559,8 @@ public vwm_t *__init_vwm__ (void) {
   };
 
   $my(tmpdir) = NULL;
+  $my(editor) = VtString.new_with (EDITOR);
+  $my(shell) = VtString.new_with (SHELL);
   $my(term) = my.term.new ();
   $my(length) = 0;
   $my(cur_idx) = -1;
@@ -3546,6 +3588,9 @@ public void __deinit_vwm__ (vwm_t **thisp) {
   }
 
   free ($my(tmpdir));
+
+  VtString.release ($my(editor));
+  VtString.release ($my(shell));
 
   free (this->prop);
   free (this);

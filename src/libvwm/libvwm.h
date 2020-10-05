@@ -86,6 +86,8 @@ typedef struct VtString_T {
   void (*release) (vt_string *);
   vt_string
     *(*new) (size_t),
+    *(*new_with) (const char *),
+    *(*new_with_len) (const char *, size_t),
     *(*clear) (vt_string *),
     *(*append) (vt_string *, char *),
     *(*append_byte) (vt_string *, char),
@@ -219,7 +221,9 @@ typedef struct vwm_get_self {
 
 typedef struct vwm_set_self {
   void
-    (*size) (vwm_t *, int, int, int),
+    (*size)   (vwm_t *, int, int, int),
+    (*shell)  (vwm_t *, char *),
+    (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t);
 
 } vwm_set_self;
