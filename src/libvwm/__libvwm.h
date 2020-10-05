@@ -280,3 +280,4 @@ do {                                                                \
 
 
 private int vwm_spawn (vwm_t *, char **);
+private void vwm_win_on_resize (vwm_win *, int);

@@ -200,12 +200,14 @@ typedef struct vwm_win_self {
   vwm_win_frame_self frame;
 
   void
+    (*draw) (vwm_win *),
     (*change) (vwm_t *, vwm_win *, int, int),
     (*release) (vwm_t *, vwm_win *);
 
   int
     (*frame_rows) (vwm_win *, int, int *);
 
+  vwm_frame *(*add_frame) (vwm_t *, vwm_win *, int, char **, int);
   vwm_win *(*new) (vwm_t *, char *, win_opts);
 
 } vwm_win_self;

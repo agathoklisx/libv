@@ -2535,6 +2535,37 @@ private vwm_frame *vwm_win_frame_new (vwm_win *this, int rows, int first_row) {
   return frame;
 }
 
+private vwm_frame *vwm_win_add_frame (vwm_t *this, vwm_win *win, int argc, char **argv, int draw) {
+  if (win->length is win->max_frames) return NULL;
+
+  win->num_separators = win->length;
+  int frame_rows = 0;
+  int mod = my.win.frame_rows (win, win->length + 1, &frame_rows);
+  int
+    num_rows = frame_rows + mod,
+    first_row = win->first_row;
+
+  vwm_frame *frame = win->head;
+  while (frame) {
+    frame->new_rows = num_rows;
+    first_row += num_rows + 1;
+    num_rows = frame_rows;
+    frame = frame->next;
+  }
+
+  frame = my.frame.new (win, num_rows, first_row);
+  frame->new_rows = num_rows;
+
+  if (NULL isnot argv and NULL isnot argv[0]) {
+    my.frame.set.argv (frame, argc, argv);
+    my.frame.fork (this, frame);
+  }
+
+  DListSetCurrent (win, win->length - 1);
+  vwm_win_on_resize (win, draw);
+  return frame;
+}
+
 private void vwm_win_frame_release (vwm_win *this, int idx) {
   vwm_frame *frame = DListPopAt (this, vwm_frame, idx);
 
@@ -2914,7 +2945,7 @@ private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
 
   if (draw) {
     if (win->is_initialized)
-      vwm_win_draw (win);
+      my.win.draw (win);
     else
       vwm_win_set_separators (win, DRAW);
   } else
@@ -2942,7 +2973,7 @@ private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame)
 
   vwm_spawn (this, argv);
   vt_video_add_log_lines (frame);
-  vwm_win_draw (win);
+  my.win.draw (win);
   return OK;
 }
 
@@ -3211,7 +3242,7 @@ private void vwm_handle_sigwinch (vwm_t *this) {
 
   win = $my(current);
 
-  vwm_win_draw (win);
+  my.win.draw (win);
   $my(need_resize) = 0;
 }
 
@@ -3361,7 +3392,7 @@ private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char
   utf8 c;
 
 getc_again:
-  c = getkey (STDIN_FILENO);
+  c = my.getkey (STDIN_FILENO);
 
   if (-1 is c) return OK;
 
@@ -3411,7 +3442,7 @@ getc_again:
       $my(last_win) = win;
       DListSetCurrent ($myprop, $my(length) - 1);
       win = $my(current);
-      vwm_win_draw (win);
+      my.win.draw (win);
 
       break;
 
@@ -3419,34 +3450,64 @@ getc_again:
       vwm_frame_kill_proc (frame);
       break;
 
+    case 's':
+      my.win.add_frame (this, win, 0, NULL, DRAW);
+      break;
+
+    case 'S': {
+        utf8 c = my.getkey (STDIN_FILENO);
+        char *argv[] = {NULL, NULL};
+        int argc = 1;
+
+        switch (c) {
+          case '!':
+            argv[0] = $my(shell)->bytes;
+            break;
+
+          case 'c':
+            argv[0] = DEFAULT_APP;
+            break;
+
+          case 'e':
+            argv[0] = $my(editor)->bytes;
+            break;
+
+          default:
+            break;
+        }
+        my.win.add_frame (this, win, argc, argv, DRAW);
+      }
+
+      break;
+
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
-      vwm_win_frame_change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DRAW);
+      my.win.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DRAW);
       break;
 
     case ARROW_LEFT_KEY:
     case ARROW_RIGHT_KEY:
     case '`':
-      vwm_win_change (this, win,
+      my.win.change (this, win,
           (c is ARROW_RIGHT_KEY) ? NEXT_POS :
           (c is '`') ? LAST_POS : PREV_POS, DRAW);
       break;
 
     case 'e':
-      vwm_win_frame_edit_log (this, win, frame);
+      my.win.frame.edit_log (this, win, frame);
       break;
 
     case '+':
-      vwm_win_frame_increase_size (win, frame, param, DRAW);
+      my.win.frame.increase_size (win, frame, param, DRAW);
       break;
 
     case '-':
-      vwm_win_frame_decrease_size (win, frame, param, DRAW);
+      my.win.frame.decrease_size (win, frame, param, DRAW);
       break;
 
     case '=':
-      vwm_win_frame_set_size (win, frame, param, DRAW);
+      my.win.frame.set_size (win, frame, param, DRAW);
       break;
 
     case '0':
@@ -3512,8 +3573,10 @@ public vwm_t *__init_vwm__ (void) {
       },
       .win = (vwm_win_self) {
         .new = vwm_win_new,
+        .draw = vwm_win_draw,
         .change = vwm_win_change,
         .release = vwm_win_release,
+        .add_frame = vwm_win_add_frame,
         .frame_rows = vwm_win_frame_rows,
         .set = (vwm_win_set_self) {
           .frame = vwm_win_set_frame
