@@ -3323,16 +3323,17 @@ private int vwm_main (vwm_t *this) {
 
   for (;;) {
     win = $my(current);
-    if (NULL is win)
+    if (NULL is win) {
+      retval = OK;
       break;
+    }
 
     ifnot (win->length) {
-      if (1 is $my(length))
-        break;
+      if (1 isnot $my(length))
+        my.win.change (this, win, PREV_POS, DRAW);
 
-      my.win.change (this, win, PREV_POS, DONOT_DRAW);
       my.win.release (this, win);
-      win = $my(current);
+      continue;
     }
 
     if ($my(need_resize))
