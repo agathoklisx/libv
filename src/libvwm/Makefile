@@ -131,7 +131,7 @@ $(SYSAPPSTATIC):
 	@$(INSTALL) -v $(NAME)_static $(SYSBINDIR)
 	@$(RM) $(NAME)_static
 
-# development (ignore)
+# development (mostly ignore)
 LIB_EXTNAME   = lib$(THIS_LIBNAME)+
 LIB_EXT       = $(LIB_EXTNAME)-$(THIS_LIBVERS)
 SYS_LIBEXT    = $(SYSLIBDIR)/$(LIB_EXT).so
@@ -145,6 +145,12 @@ $(SYS_LIBEXT):
 
 $(SYSINCDIR)/$(THIS_HEADER_EXT):
 	@$(CP) $(THIS_HEADER_EXT) $(SYSINCDIR)
+
+APPEXT = $(NAME)+
+appext-shared:
+	$(CC) -x c $(APPEXT).c $(APPOPTS) $(APPFLAGS) -lvwm+ $(SHARED_APP_FLAGS) -o $(APPEXT)
+	@$(INSTALL) -v $(APPEXT) $(SYSBINDIR)
+	@$(RM) $(APPEXT)
 
 clean-libext:
 	@$(TEST) ! -f $(SYS_LIBEXT) || $(RM) $(SYS_LIBEXT)
