@@ -1,3 +1,56 @@
+#ifndef mutable
+#define mutable __attribute__((__weak__))
+#endif
+
+#ifndef OK
+#define OK 0
+#endif
+
+#ifndef NOTOK
+#define NOTOK -1
+#endif
+
+#ifndef ifnot
+#define ifnot(__expr__) if (0 == (__expr__))
+#endif
+
+#ifndef ifnull
+#define ifnull(__expr__) if (NULL == (__expr__))
+#endif
+
+#ifndef is
+#define is ==
+#endif
+
+#ifndef isnot
+#define isnot !=
+#endif
+
+#ifndef or
+#define or ||
+#endif
+
+#ifndef and
+#define and &&
+#endif
+
+#ifndef $my
+#define $my(__p__) this->prop->__p__
+#endif
+
+#ifndef my
+#define my this->self
+#endif
+
+#ifndef $myprop
+#define $myprop this->prop
+#endif
+
+#ifndef bytelen
+#define bytelen strlen
+#endif
+
+
 #define INDEX_ERROR            -1000
 #define INTEGEROVERFLOW_ERROR  -1002
 

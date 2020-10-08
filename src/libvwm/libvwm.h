@@ -9,58 +9,6 @@
 #define private __attribute__((visibility ("hidden")))
 #endif
 
-#ifndef mutable
-#define mutable __attribute__((__weak__))
-#endif
-
-#ifndef OK
-#define OK 0
-#endif
-
-#ifndef NOTOK
-#define NOTOK -1
-#endif
-
-#ifndef ifnot
-#define ifnot(__expr__) if (0 == (__expr__))
-#endif
-
-#ifndef ifnull
-#define ifnull(__expr__) if (NULL == (__expr__))
-#endif
-
-#ifndef is
-#define is ==
-#endif
-
-#ifndef isnot
-#define isnot !=
-#endif
-
-#ifndef or
-#define or ||
-#endif
-
-#ifndef and
-#define and &&
-#endif
-
-#ifndef $my
-#define $my(__p__) this->prop->__p__
-#endif
-
-#ifndef my
-#define my this->self
-#endif
-
-#ifndef $myprop
-#define $myprop this->prop
-#endif
-
-#ifndef bytelen
-#define bytelen strlen
-#endif
-
 typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef signed int utf8;
@@ -70,6 +18,9 @@ typedef signed int utf8;
 #define LAST_POS    0
 #define PREV_POS   -1
 #define UP_POS     -2
+
+#define VWM_DONE (1 << 0)
+#define VWM_QUIT (1 << 1)
 
 #define DRAW        1
 #define DONOT_DRAW  0
@@ -102,8 +53,9 @@ typedef struct vwm_win vwm_win;
 typedef struct vwm_frame vwm_frame;
 typedef struct vwm_t vwm_t;
 
-typedef vt_string *(*ProcessChar) (vwm_frame *, vt_string *, int);
 typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
+typedef int (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *);
+typedef vt_string *(*ProcessChar) (vwm_frame *, vt_string *, int);
 
 typedef struct win_opts {
   int
@@ -181,7 +133,9 @@ typedef struct vwm_win_set_self {
 } vwm_win_set_self;
 
 typedef struct vwm_win_get_self {
-  vwm_frame *(*frame_at) (vwm_win *, int);
+  vwm_frame
+    *(*frame_at) (vwm_win *, int),
+    *(*current_frame) (vwm_win *);
 } vwm_win_get_self;
 
 typedef struct vwm_win_frame_self {
@@ -215,19 +169,23 @@ typedef struct vwm_win_self {
 
 typedef struct vwm_get_self {
   int
+    (*state) (vwm_t *),
     (*lines) (vwm_t *),
     (*columns) (vwm_t *);
 
   vwm_term *(*term) (vwm_t *);
-
+  vwm_win *(*current_win) (vwm_t *);
+  vwm_frame *(*current_frame) (vwm_t *);
 } vwm_get_self;
 
 typedef struct vwm_set_self {
   void
     (*size)   (vwm_t *, int, int, int),
+    (*state)  (vwm_t *, int),
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
-    (*tmpdir) (vwm_t *, char *, size_t);
+    (*tmpdir) (vwm_t *, char *, size_t),
+    (*on_tab_callback) (vwm_t *, OnTabCallback);
 
 } vwm_set_self;
 

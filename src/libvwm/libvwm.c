@@ -75,7 +75,6 @@ static VtString_T VtString;
 #define MAX_SEQ_LEN 16
 
 #define BUFSIZE     4096
-#define QUIT        -10
 #define TABWIDTH    8
 
 #define ISDIGIT(c_)     ('0' <= (c_) && (c_) <= '9')
@@ -294,6 +293,7 @@ struct vwm_prop {
     *editor;
 
   int
+    state,
     name_gen,
     num_rows,
     num_cols,
@@ -311,6 +311,8 @@ struct vwm_prop {
   int
     cur_idx,
     length;
+
+  OnTabCallback on_tab_callback;
 };
 
 private void vwm_sigwinch_handler (int sig);
@@ -847,12 +849,20 @@ private void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
   $my(first_column) = first_col;
 }
 
+private void vwm_set_state (vwm_t *this, int state) {
+  $my(state) = state;
+}
+
 private void vwm_set_editor (vwm_t *this, char *editor) {
   if (NULL is editor) return;
   size_t len = bytelen (editor);
   ifnot (len) return;
   VtString.clear ($my(editor));
   VtString.append_with_len ($my(editor), editor, len);
+}
+
+private void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
+  $my(on_tab_callback) = cb;
 }
 
 private void vwm_set_shell (vwm_t *this, char *shell) {
@@ -1055,8 +1065,20 @@ private int vwm_get_columns (vwm_t *this) {
   return $my(term)->columns;
 }
 
+private vwm_win *vwm_get_current_win (vwm_t *this) {
+  return $my(current);
+}
+
+private vwm_frame *vwm_get_current_frame (vwm_t *this) {
+  return $my(current)->current;
+}
+
 private vwm_term *vwm_get_term (vwm_t *this) {
   return $my(term);
+}
+
+private int vwm_get_state (vwm_t *this) {
+  return $my(state);
 }
 
 private int **vwm_alloc_ints (int rows, int cols, int val) {
@@ -2575,6 +2597,7 @@ private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, i
   if (1 is win->length) {
     my.frame.release (win, 0);
   } else {
+    int is_last_frame = win->last_frame is frame;
     int idx = DListGetIdx (win, vwm_frame, frame);
     my.frame.release (win, idx);
 
@@ -2591,6 +2614,10 @@ private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, i
       num_rows = frame_rows;
       frame = frame->next;
     }
+
+    if (is_last_frame)
+      win->last_frame = win->current;
+
     vwm_win_on_resize (win, draw);
   }
 
@@ -2602,7 +2629,7 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
 
   if (NULL is frame) return;
 
-  ifnot (NULL == frame->logfile) {
+  ifnot (NULL is frame->logfile) {
     if (frame->remove_log)
       unlink (frame->logfile);
 
@@ -3377,7 +3404,7 @@ private int vwm_main (vwm_t *this) {
 
     if (FD_ISSET (STDIN_FILENO, &read_mask)) {
       if (0 < fd_read (STDIN_FILENO, input_buf, 1))
-        if (QUIT is my.process_input (this, win, frame, input_buf)) {
+        if (VWM_QUIT is my.process_input (this, win, frame, input_buf)) {
           retval = OK;
           break;
         }
@@ -3424,6 +3451,11 @@ private int vwm_main (vwm_t *this) {
   return NOTOK;
 }
 
+private int vwm_default_on_tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame) {
+  (void) this; (void) win; (void) frame;
+  return OK;
+}
+
 private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char *input_buf) {
   if (input_buf[0] isnot MODE_KEY) {
     fd_write (frame->fd, input_buf, 1);
@@ -3448,8 +3480,15 @@ getc_again:
       fd_write (frame->fd, input_buf, 1);
       break;
 
+    case '\t': {
+        int retval = $my(on_tab_callback) (this, win, frame);
+        if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
+          return VWM_QUIT;
+      }
+      break;
+
     case 'q':
-      return QUIT;
+      return VWM_QUIT;
 
     case '!':
     case 'c':
@@ -3655,15 +3694,20 @@ public vwm_t *__init_vwm__ (void) {
         }
       },
       .get = (vwm_get_self) {
+        .term = vwm_get_term,
+        .state = vwm_get_state,
         .lines = vwm_get_lines,
         .columns = vwm_get_columns,
-        .term = vwm_get_term
+        .current_win = vwm_get_current_win,
+        .current_frame = vwm_get_current_frame
       },
       .set = (vwm_set_self) {
         .size = vwm_set_size,
+        .state = vwm_set_state,
         .shell =  vwm_set_shell,
         .editor = vwm_set_editor,
-        .tmpdir = vwm_set_tmpdir
+        .tmpdir = vwm_set_tmpdir,
+        .on_tab_callback = vwm_set_on_tab_callback
       }
     },
     .prop = prop
@@ -3678,6 +3722,7 @@ public vwm_t *__init_vwm__ (void) {
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
 
+  my.set.on_tab_callback (this, vwm_default_on_tab_callback);
   my.set.tmpdir (this, NULL, 0);
 
   VWM = this;
