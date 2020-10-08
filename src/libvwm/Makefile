@@ -11,6 +11,7 @@ THISDIR := $(shell (cd . && pwd))
 THIS_LIBVERS  :=  $(API).$(REV)
 
 THIS_HEADER     = lib$(THIS_LIBNAME).h
+THIS_HEADER_EXT = lib$(THIS_LIBNAME)+.h
 THIS_LIBSRC     = lib$(THIS_LIBNAME).c
 LIBNAME         = $(THIS_LIBNAME)-$(THIS_LIBVERS)
 THIS_LIB        = lib$(LIBNAME)
@@ -130,8 +131,29 @@ $(SYSAPPSTATIC):
 	@$(INSTALL) -v $(NAME)_static $(SYSBINDIR)
 	@$(RM) $(NAME)_static
 
+# development (ignore)
+LIB_EXTNAME   = lib$(THIS_LIBNAME)+
+LIB_EXT       = $(LIB_EXTNAME)-$(THIS_LIBVERS)
+SYS_LIBEXT    = $(SYSLIBDIR)/$(LIB_EXT).so
+LIBEXT_FLAGS := -L$(SYSLIBDIR) -l$(THIS_LIBNAME) -lved -lved+
+LIBEXT_OBJS  :=
+
+shared-libext: shared-lib $(SYS_LIBEXT) $(SYSINCDIR)/$(THIS_HEADER_EXT)
+$(SYS_LIBEXT):
+	$(CC) -x c $(LIB_EXTNAME).c $(LIBEXT_OBJS) $(LIBFLAGS) $(LIBEXT_FLAGS) $(SHARED_CFLAGS) -o $(SYS_LIBEXT)
+	@$(LN_S) -vf $(SYS_LIBEXT) $(SYSLIBDIR)/$(LIB_EXTNAME).so
+
+$(SYSINCDIR)/$(THIS_HEADER_EXT):
+	@$(CP) $(THIS_HEADER_EXT) $(SYSINCDIR)
+
+clean-libext:
+	@$(TEST) ! -f $(SYS_LIBEXT) || $(RM) $(SYS_LIBEXT)
+	@$(TEST) ! -f $(SYSINCDIR)/$(THIS_HEADER_EXT) || $(RM) $(SYSINCDIR)/$(THIS_HEADER_EXT)
+
+A_REQ_OBJS :=
+A_FLAGS :=
 aga: shared-lib
-	$(CC) -x c aga.c $(APPOPTS) $(APPFLAGS) $(SHARED_APP_FLAGS) -o $(NAME)
+	$(CC) -x c aga.c $(A_REQ_OBJS) $(APPOPTS) $(APPFLAGS) -lvwm+ $(A_FLAGS) $(SHARED_APP_FLAGS) -o $(NAME)
 	@$(INSTALL) -v $(NAME) $(SYSBINDIR)
 	@$(RM) $(NAME)
 
@@ -145,6 +167,7 @@ clean_shared: clean_header
 	@$(TEST) ! -f $(THIS_SHAREDLIB) || $(RM) $(THIS_SHAREDLIB)
 clean_static: clean_header
 	@$(TEST) ! -f $(THIS_STATICLIB) || $(RM) $(THIS_STATICLIB)
+
 clean_header:
 	@$(TEST) ! -f $(SYSINCDIR)/$(THIS_HEADER) || $(RM) $(SYSINCDIR)/$(THIS_HEADER)
 
