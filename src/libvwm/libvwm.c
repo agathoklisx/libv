@@ -250,7 +250,9 @@ struct vwm_frame {
 struct vwm_win {
   char *name;
 
-  vt_string *separators_buf;
+  vt_string
+    *render,
+    *separators_buf;
 
   int
     saved_row,
@@ -263,6 +265,7 @@ struct vwm_win {
     first_col,
     last_row,
     max_frames,
+    draw_separators,
     num_separators,
     is_initialized;
 
@@ -655,6 +658,15 @@ private vt_string *vt_string_clear (vt_string *this) {
   return this;
 }
 
+private vt_string *vt_string_clear_at (vt_string *this, int idx) {
+  if (0 > idx) idx += this->num_bytes;
+  if (idx < 0) return this;
+  if (idx > (int) this->num_bytes) idx = this->num_bytes;
+  this->bytes[idx] = '\0';
+  this->num_bytes = idx;
+  return this;
+}
+
 private vt_string *vt_string_append_with_len (vt_string *this, char *bytes, size_t len) {
   size_t bts = this->num_bytes + len;
   if (bts >= this->mem_size)
@@ -681,12 +693,13 @@ private vt_string *vt_string_append_byte (vt_string *this, char c) {
 public VtString_T __init_vt_string__ (void) {
   return (VtString_T) {
     .new = vt_string_new,
-    .new_with = vt_string_new_with,
-    .new_with_len = vt_string_new_with_len,
-    .release = vt_string_release,
     .clear = vt_string_clear,
     .append = vt_string_append,
+    .release = vt_string_release,
+    .new_with = vt_string_new_with,
+    .clear_at = vt_string_clear_at,
     .append_byte = vt_string_append_byte,
+    .new_with_len = vt_string_new_with_len,
     .append_with_len = vt_string_append_with_len
   };
 }
@@ -2414,6 +2427,11 @@ private void vwm_win_set_frame (vwm_win *this, vwm_frame *frame) {
   vt_setscroll (frame->output, frame->scroll_first_row + frame->first_row - 1,
       frame->last_row + frame->first_row - 1);
 
+  if (this->draw_separators) {
+    this->draw_separators = 0;
+    VtString.append_with_len (frame->output, this->separators_buf->bytes, this->separators_buf->num_bytes);
+  }
+
   vt_goto (frame->output, frame->row_pos + frame->first_row - 1, frame->col_pos);
 
   ifnot (NULL is this->last_frame) {
@@ -2595,10 +2613,12 @@ private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, i
   win->num_separators--;
 
   if (1 is win->length) {
+    my.frame.kill_proc (win->head);
     my.frame.release (win, 0);
   } else {
     int is_last_frame = win->last_frame is frame;
     int idx = DListGetIdx (win, vwm_frame, frame);
+    my.frame.kill_proc (frame);
     my.frame.release (win, idx);
 
     int frame_rows = 0;
@@ -2696,8 +2716,8 @@ private void vwm_make_separator (vt_string *render, char *color, int cells, int 
   vt_attr_reset (render);
 }
 
-private void vwm_win_set_separators (vwm_win *this, int draw) {
-  ifnot (this->num_separators) return;
+private int vwm_win_set_separators (vwm_win *this, int draw) {
+  ifnot (this->num_separators) return NOTOK;
 
   VtString.clear (this->separators_buf);
 
@@ -2712,6 +2732,8 @@ private void vwm_win_set_separators (vwm_win *this, int draw) {
 
   if (DRAW is draw)
     vt_write (this->separators_buf->bytes, stdout);
+
+  return OK;
 }
 
 private void vwm_win_draw (vwm_win *this) {
@@ -2726,7 +2748,8 @@ private void vwm_win_draw (vwm_win *this) {
   uchar on = NORMAL;
   utf8 chr = 0;
 
-  vt_string *render = VtString.new (4096);
+  vt_string *render = this->render;
+  VtString.clear (render);
   VtString.append (render, TERM_SCREEN_CLEAR);
   vt_setscroll (render, 0, 0);
   vt_attr_reset (render);
@@ -2771,17 +2794,25 @@ private void vwm_win_draw (vwm_win *this) {
       VtString.append (render, "\r\n");
     }
 
-    vwm_win_set_separators (this, DONOT_DRAW);
-    VtString.append_with_len (render, this->separators_buf->bytes, this->separators_buf->num_bytes);
+    // clear the last newline, otherwise it scrolls one line more
+    VtString.clear_at (render, -1); // this is visible when there is one frame
 
+    /*  un-needed?
     vt_setscroll (render, frame->scroll_first_row + frame->first_row - 1,
-       frame->last_row + frame->first_row - 1);
+        frame->last_row + frame->first_row - 1);
     vt_goto (render, frame->row_pos + frame->first_row - 1, frame->col_pos);
+    */
+
     frame = frame->next;
   }
 
+  vwm_win_set_separators (this, DONOT_DRAW);
+  VtString.append_with_len (render, this->separators_buf->bytes, this->separators_buf->num_bytes);
+
+  frame = this->current;
+  vt_goto (render, frame->row_pos + frame->first_row - 1, frame->col_pos);
+
   vt_write (render->bytes, stdout);
-  VtString.release (render);
 }
 
 private void vwm_win_on_resize (vwm_win *win, int draw) {
@@ -2961,7 +2992,9 @@ private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int 
 
   win->last_frame = frame;
   DListSetCurrent (win, idx);
-  vwm_win_set_separators (win, draw);
+  if (OK is vwm_win_set_separators (win, draw))
+    if (draw is DONOT_DRAW)
+      win->draw_separators = 1;
 }
 
 private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
@@ -3007,11 +3040,6 @@ private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
       vwm_win_set_separators (win, DRAW);
   } else
     vwm_win_set_separators (win, DONOT_DRAW);
-
-  /* testing */
-  if (NULL isnot win->head->argv[0])
-    if (0 is strcmp (win->head->argv[0], "vedas"))
-      write (win->head->fd, ":redraw\r", 8);
 }
 
 private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame) {
@@ -3081,7 +3109,7 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
 
   win->num_separators = num_frames - 1;
   win->separators_buf = VtString.new ((win->num_rows * win->num_cols) + 32);
-
+  win->render = VtString.new (4096);
   win->last_row = win->num_rows;
 
   if (win->first_col <= 0) win->first_col = 1;
@@ -3126,6 +3154,7 @@ private void vwm_win_release (vwm_t *this, vwm_win *win) {
     my.frame.release (w, 0);
 
   VtString.release (win->separators_buf);
+  VtString.release (win->render);
 
   free (w->name);
   free (w);
@@ -3569,7 +3598,7 @@ getc_again:
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
-      my.win.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DRAW);
+      my.win.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DONOT_DRAW);
       break;
 
     case ARROW_LEFT_KEY:
@@ -3580,7 +3609,8 @@ getc_again:
           (c is '`') ? LAST_POS : PREV_POS, DRAW);
       break;
 
-    case 'e':
+    case PAGE_UP_KEY:
+    case 'E':
       my.win.frame.edit_log (this, win, frame);
       break;
 
@@ -3681,8 +3711,9 @@ public vwm_t *__init_vwm__ (void) {
       },
       .frame = (vwm_frame_self) {
         .new = vwm_win_frame_new,
-        .release = vwm_win_frame_release,
         .fork = vwm_frame_fork,
+        .release = vwm_win_frame_release,
+        .kill_proc = vwm_frame_kill_proc,
         .get = (vwm_frame_get_self) {
           .fd = vwm_frame_get_fd
         },

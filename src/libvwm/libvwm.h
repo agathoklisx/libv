@@ -37,11 +37,12 @@ typedef struct VtString_T {
   void (*release) (vt_string *);
   vt_string
     *(*new) (size_t),
-    *(*new_with) (const char *),
-    *(*new_with_len) (const char *, size_t),
     *(*clear) (vt_string *),
+    *(*clear_at) (vt_string *, int),
+    *(*new_with) (const char *),
     *(*append) (vt_string *, char *),
     *(*append_byte) (vt_string *, char),
+    *(*new_with_len) (const char *, size_t),
     *(*append_with_len) (vt_string *, char *, size_t);
 } VtString_T;
 
@@ -118,10 +119,11 @@ typedef struct vwm_frame_self {
   vwm_frame_get_self get;
   vwm_frame_set_self set;
 
-  void (*release) (vwm_win *, int);
+  void
+    (*release) (vwm_win *, int),
+    (*kill_proc) (vwm_frame *);
 
   pid_t (*fork) (vwm_t *, vwm_frame *);
-
   vwm_frame *(*new) (vwm_win *, int, int);
 } vwm_frame_self;
 

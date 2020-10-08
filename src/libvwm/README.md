@@ -52,7 +52,7 @@ MODE_KEY-[param]+    : increase the size of the current frame (default count 1)
 MODE_KEY-[param]-    : decrease the size of the current frame (default count 1)  
 MODE_KEY-[param]=    : set the lines (param) of the current frame  
 MODE_KEY-[param]n    : create and switch to a new window with `count' frames (default 1)    
-MODE_KEY-e           : edit the log file (if it's has been set)  
+MODE_KEY-E|PageUp    : edit the log file (if it is has been set)  
 MODE_KEY-s           : split the window and add a new frame  
 MODE_KEY-S[!ec]      : likewise, but also fork with a shell or an editor or the default application respectively (without a param is like MODE_KEY-s)  
 MODE_KEY-d           : delete current frame  
