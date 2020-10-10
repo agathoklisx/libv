@@ -63,13 +63,8 @@ static VtString_T VtString;
 #define PATH_MAX 4096  /* bytes in a path name */
 #endif
 
-#ifndef MAX_FRAMES
-#define MAX_FRAMES 3
-#endif
-
 #define MIN_ROWS 2
 #define MAX_CHAR_LEN 4
-#define MAX_ARGS    256
 #define MAX_TTYNAME 1024
 #define MAX_PARAMS  12
 #define MAX_SEQ_LEN 16
@@ -194,7 +189,7 @@ struct vwm_frame {
   char
     mb_buf[8],
     tty_name[1024],
-    *argv[MAX_ARGS],
+    **argv,
     *logfile;
 
   uchar
@@ -204,6 +199,7 @@ struct vwm_frame {
 
   int
     fd,
+    argc,
     logfd,
     status,
     mb_len,
@@ -315,7 +311,9 @@ struct vwm_prop {
     cur_idx,
     length;
 
+  void *user_object;
   OnTabCallback on_tab_callback;
+  RLineCallback rline_callback;
 };
 
 private void vwm_sigwinch_handler (int sig);
@@ -606,6 +604,13 @@ private size_t byte_cp (char *dest, const char *src, size_t nelem) {
   return len;
 }
 
+private size_t cstring_cp (char *dest, size_t dest_len, const char *src, size_t nelem) {
+  size_t num = (nelem > (dest_len - 1) ? dest_len - 1 : nelem);
+  size_t len = (NULL is src ? 0 : byte_cp (dest, src, num));
+  dest[len] = '\0';
+  return len;
+}
+
 private size_t string_align (size_t size) {
   size_t sz = 8 - (size % 8);
   sz = sizeof (char) * (size + (sz < 8 ? sz : 0));
@@ -878,6 +883,14 @@ private void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
   $my(on_tab_callback) = cb;
 }
 
+private void vwm_set_user_object (vwm_t *this, void *object) {
+  $my(user_object) = object;
+}
+
+private void vwm_set_rline_callback (vwm_t *this, RLineCallback cb) {
+  $my(rline_callback) = cb;
+}
+
 private void vwm_set_shell (vwm_t *this, char *shell) {
   if (NULL is shell) return;
   size_t len = bytelen (shell);
@@ -1092,6 +1105,14 @@ private vwm_term *vwm_get_term (vwm_t *this) {
 
 private int vwm_get_state (vwm_t *this) {
   return $my(state);
+}
+
+private vt_string *vwm_get_shell (vwm_t *this) {
+  return $my(shell);
+}
+
+private vt_string *vwm_get_editor (vwm_t *this) {
+  return $my(editor);
 }
 
 private int **vwm_alloc_ints (int rows, int cols, int val) {
@@ -2468,11 +2489,83 @@ private void vt_process_output (vwm_frame *frame, char *buf, int len) {
   vt_write (frame->output->bytes, stdout);
 }
 
+private void frame_argv_release (vwm_frame *this) {
+  if (NULL is this->argv) return;
+  for (int i = 0; i <= this->argc; i++)
+    free (this->argv[i]);
+  free (this->argv);
+  this->argv = NULL;
+  this->argc = 0;
+}
+
+private void vwm_frame_set_command (vwm_frame *this, char *command) {
+  if (NULL is command or 0 is bytelen (command))
+    return;
+
+  frame_argv_release (this);
+
+  char *sp = command;
+  char *tokbeg;
+  size_t len;
+
+  this->argc = 0;
+  this->argv = Alloc (sizeof (char *));
+
+  while (*sp) {
+    while (*sp and *sp is ' ') sp++;
+    ifnot (*sp) break;
+
+    tokbeg = sp;
+
+    if (*sp is '"') {
+      sp++;
+      tokbeg++;
+
+parse_quoted:
+      while (*sp and *sp isnot '"') sp++;
+      ifnot (*sp) goto theerror;
+      if (*(sp - 1) is '\\') goto parse_quoted;
+      len = (size_t) (sp - tokbeg);
+      sp++;
+      goto add_arg;
+    }
+
+    while (*sp and *sp isnot ' ') sp++;
+
+    len = (size_t) (sp - tokbeg);
+
+add_arg:
+    this->argc++;
+    this->argv = Realloc (this->argv, sizeof (char *) * (this->argc + 1));
+    this->argv[this->argc - 1] = Alloc (len + 1);
+    cstring_cp (this->argv[this->argc - 1], len + 1, tokbeg, len);
+
+    ifnot (*sp) break;
+    sp++;
+  }
+
+  this->argv[this->argc] = (char *) NULL;
+
+  return;
+
+theerror:
+  frame_argv_release (this);
+}
+
 private void vwm_frame_set_argv (vwm_frame *this, int argc, char **argv) {
-  if (argc >= MAX_ARGS - 1) argc = MAX_ARGS - 1;
-  for (int i = 0; i < argc; i++)
-    this->argv[i] = argv[i];
+  if (argc <= 0) return;
+
+  frame_argv_release (this);
+
+  this->argv = Alloc (sizeof (char *) * (argc + 1));
+  for (int i = 0; i < argc; i++) {
+    size_t len = bytelen (argv[i]);
+    this->argv[i] = Alloc (len + 1);
+    cstring_cp (this->argv[i], len + 1, argv[i], len);
+  }
+
   this->argv[argc] = NULL;
+  this->argc = argc;
 }
 
 private void vwm_frame_set_fd (vwm_frame *this, int fd) {
@@ -2481,6 +2574,10 @@ private void vwm_frame_set_fd (vwm_frame *this, int fd) {
 
 private int vwm_frame_get_fd (vwm_frame *this) {
   return this->fd;
+}
+
+private pid_t vwm_frame_get_pid (vwm_frame *this) {
+  return this->pid;
 }
 
 private void vwm_frame_kill_proc (vwm_frame *frame) {
@@ -2541,7 +2638,8 @@ private vwm_frame *vwm_win_frame_new (vwm_win *this, int rows, int first_row) {
   DListAppend (this, frame);
 
   frame->pid = -1;
-  frame->argv[0] = NULL;
+  frame->argc = 0;
+  frame->argv = NULL;
   frame->logfd = -1;
   frame->logfile = NULL;
   frame->remove_log = 0;
@@ -2596,7 +2694,7 @@ private vwm_frame *vwm_win_add_frame (vwm_t *this, vwm_win *win, int argc, char 
   frame = my.frame.new (win, num_rows, first_row);
   frame->new_rows = num_rows;
 
-  if (NULL isnot argv and NULL isnot argv[0]) {
+  if (NULL isnot argv) {
     my.frame.set.argv (frame, argc, argv);
     my.frame.fork (this, frame);
   }
@@ -2666,6 +2764,8 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
 
   free (frame->tabstops);
   free (frame->esc_param);
+
+  frame_argv_release (frame);
 
   vt_string_release (frame->output);
 
@@ -2824,7 +2924,7 @@ private void vwm_win_on_resize (vwm_win *win, int draw) {
     it->last_row = it->num_rows;
     it->first_row = frow;
     frow += it->num_rows + 1;
-    if (it->argv[0] and it->pid isnot -1) {
+    if (it->argv and it->pid isnot -1) {
       struct winsize ws = {.ws_row = it->num_rows, .ws_col = it->num_cols};
       ioctl (it->fd, TIOCSWINSZ, &ws);
       kill (it->pid, SIGWINCH);
@@ -3315,7 +3415,7 @@ private void vwm_handle_sigwinch (vwm_t *this) {
       frame->last_row = frame->num_rows;
       first_row += num_rows + 1;
       num_rows = frame_rows;
-      if (frame->argv[0] and frame->pid isnot -1) {
+      if (frame->argv and frame->pid isnot -1) {
         struct winsize ws = {.ws_row = frame->num_rows, .ws_col = frame->num_cols};
         ioctl (frame->fd, TIOCSWINSZ, &ws);
         kill (frame->pid, SIGWINCH);
@@ -3371,7 +3471,7 @@ private int vwm_main (vwm_t *this) {
 
   vwm_frame *frame = win->head;
   while (frame) {
-    if (frame->argv[0] isnot NULL and frame->pid is -1)
+    if (frame->argv isnot NULL and frame->pid is -1)
       my.frame.fork (this, frame);
 
     frame = frame->next;
@@ -3480,8 +3580,13 @@ private int vwm_main (vwm_t *this) {
   return NOTOK;
 }
 
-private int vwm_default_on_tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame) {
-  (void) this; (void) win; (void) frame;
+private int vwm_default_on_tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+  (void) this; (void) win; (void) frame; (void) object;
+  return OK;
+}
+
+private int vwm_default_rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+  (void) this; (void) win; (void) frame; (void) object;
   return OK;
 }
 
@@ -3510,7 +3615,14 @@ getc_again:
       break;
 
     case '\t': {
-        int retval = $my(on_tab_callback) (this, win, frame);
+        int retval = $my(on_tab_callback) (this, win, frame, $my(user_object));
+        if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
+          return VWM_QUIT;
+      }
+      break;
+
+    case ':': {
+        int retval = $my(rline_callback) (this, win, frame, $my(user_object));
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
       }
@@ -3525,12 +3637,12 @@ getc_again:
         break;
 
       if (c is '!') {
-        frame->argv[0] = $my(shell)->bytes;
-        frame->argv[1] = NULL;
+        char *argv[] = {$my(shell)->bytes, NULL};
+        my.frame.set.argv (frame, 1, argv);
       } else {
-        if (NULL is frame->argv[0]) {
-          frame->argv[0] = DEFAULT_APP;
-          frame->argv[1] = NULL;
+        if (NULL is frame->argv) {
+          char *argv[] = {DEFAULT_APP, NULL};
+          my.frame.set.argv (frame, 1, argv);
         }
       }
 
@@ -3715,19 +3827,23 @@ public vwm_t *__init_vwm__ (void) {
         .release = vwm_win_frame_release,
         .kill_proc = vwm_frame_kill_proc,
         .get = (vwm_frame_get_self) {
-          .fd = vwm_frame_get_fd
+          .fd = vwm_frame_get_fd,
+          .pid = vwm_frame_get_pid
         },
         .set = (vwm_frame_set_self) {
           .fd = vwm_frame_set_fd,
           .log = vwm_frame_set_log,
           .argv = vwm_frame_set_argv,
+          .command = vwm_frame_set_command,
           .unimplemented = vwm_frame_set_unimplemented
         }
       },
       .get = (vwm_get_self) {
         .term = vwm_get_term,
+        .shell = vwm_get_shell,
         .state = vwm_get_state,
         .lines = vwm_get_lines,
+        .editor = vwm_get_editor,
         .columns = vwm_get_columns,
         .current_win = vwm_get_current_win,
         .current_frame = vwm_get_current_frame
@@ -3738,6 +3854,8 @@ public vwm_t *__init_vwm__ (void) {
         .shell =  vwm_set_shell,
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
+        .user_object = vwm_set_user_object,
+        .rline_callback =  vwm_set_rline_callback,
         .on_tab_callback = vwm_set_on_tab_callback
       }
     },
@@ -3752,7 +3870,9 @@ public vwm_t *__init_vwm__ (void) {
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
+  $my(user_object) = NULL;
 
+  my.set.rline_callback  (this, vwm_default_rline_callback);
   my.set.on_tab_callback (this, vwm_default_on_tab_callback);
   my.set.tmpdir (this, NULL, 0);
 

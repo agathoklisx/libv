@@ -13,14 +13,32 @@ typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef signed int utf8;
 
+
+#ifndef MAX_FRAMES
+#define MAX_FRAMES 3
+#endif
+
+#ifndef MAX_ARGS
+#define MAX_ARGS    256
+#endif
+
+#ifndef MAXLEN_COMMAND
+#define MAXLEN_COMMAND 256
+#endif
+
+#ifndef MAXLEN_LINE
+#define MAXLEN_LINE 4096
+#endif
+
 #define DOWN_POS    2
 #define NEXT_POS    1
 #define LAST_POS    0
 #define PREV_POS   -1
 #define UP_POS     -2
 
-#define VWM_DONE (1 << 0)
-#define VWM_QUIT (1 << 1)
+#define VWM_DONE     (1 << 0)
+#define VWM_IGNORE_FOR_NOW (1 << 1)
+#define VWM_QUIT     (1 << 2)      // this coresponds to EXIT_THIS
 
 #define DRAW        1
 #define DONOT_DRAW  0
@@ -55,7 +73,9 @@ typedef struct vwm_frame vwm_frame;
 typedef struct vwm_t vwm_t;
 
 typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
-typedef int (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *);
+typedef int (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
+typedef int (*RLineCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
+
 typedef vt_string *(*ProcessChar) (vwm_frame *, vt_string *, int);
 
 typedef struct win_opts {
@@ -104,12 +124,14 @@ typedef struct vwm_tern_self {
 
 typedef struct vwm_frame_get_self {
   int (*fd) (vwm_frame *);
+  pid_t (*pid) (vwm_frame *);
 } vwm_frame_get_self;
 
 typedef struct vwm_frame_set_self {
   void
     (*fd) (vwm_frame *, int),
     (*argv) (vwm_frame *, int, char **),
+    (*command) (vwm_frame *, char *),
     (*unimplemented) (vwm_frame *, Unimplemented);
 
   int (*log) (vwm_frame *, char *,  int);
@@ -175,6 +197,10 @@ typedef struct vwm_get_self {
     (*lines) (vwm_t *),
     (*columns) (vwm_t *);
 
+  vt_string
+    *(*shell) (vwm_t *),
+    *(*editor) (vwm_t *);
+
   vwm_term *(*term) (vwm_t *);
   vwm_win *(*current_win) (vwm_t *);
   vwm_frame *(*current_frame) (vwm_t *);
@@ -187,6 +213,8 @@ typedef struct vwm_set_self {
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t),
+    (*user_object) (vwm_t *, void *),
+    (*rline_callback) (vwm_t *, RLineCallback),
     (*on_tab_callback) (vwm_t *, OnTabCallback);
 
 } vwm_set_self;

@@ -313,7 +313,6 @@ do {                                                                \
   (list)->current;                                                  \
 })
 
-#define MAXLEN_LINE 4096
 #define STR_FMT_(fmt_, ...)                                            \
 ({                                                                    \
   char buf_[MAXLEN_LINE];                                             \
