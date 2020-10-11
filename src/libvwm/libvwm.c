@@ -3285,6 +3285,7 @@ private int vwm_spawn (vwm_t *this, char **argv) {
     setenv ("TERM", $my(term)->name, 1);
     setenv ("LINES", lrows, 1);
     setenv ("COLUMNS", lcols, 1);
+
     execvp (argv[0], argv);
     fprintf (stderr, "execvp failed\n");
     _exit (1);
@@ -3363,6 +3364,7 @@ private pid_t vwm_frame_fork (vwm_t *this, vwm_frame *frame) {
     setenv ("TERM",  $my(term)->name, 1);
     setenv ("LINES", rows, 1);
     setenv ("COLUMNS", cols, 1);
+    setenv ("VWM", "1", 1);
 
     execvp (frame->argv[0], frame->argv);
     fprintf (stderr, "execvp() failed for command: '%s'\n", frame->argv[0]);
