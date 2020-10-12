@@ -25,7 +25,6 @@
 #include "__libvwm.h"
 
 static vwm_t *VWM;
-static VtString_T VtString;
 
 #ifndef SHELL
 #define SHELL "zsh"
@@ -152,6 +151,14 @@ enum vt_keystate {
   appl
 };
 
+typedef struct string_t {
+  size_t
+    mem_size,
+    num_bytes;
+
+  char *bytes;
+} string_t;
+
 typedef struct dirlist_t dirlist_t;
 
 struct dirlist_t {
@@ -185,12 +192,14 @@ struct vwm_term {
     in_fd;
 };
 
+typedef string_t *(*ProcessChar) (vwm_frame *, string_t *, int);
+
 struct vwm_frame {
   char
-    mb_buf[8],
-    tty_name[1024],
     **argv,
-    *logfile;
+    *logfile,
+    mb_buf[8],
+    tty_name[1024];
 
   uchar
     charset[2],
@@ -230,23 +239,29 @@ struct vwm_frame {
 
   pid_t pid;
 
-  vt_string *output;
+  string_t *render;
 
+  ProcessOutput process_output;
   ProcessChar process_char;
   Unimplemented unimplemented;
 
   vwm_win *parent;
   vwm_t   *root;
 
+  vwm_frame_self self;
+  vwm_win_self   win;
+
   vwm_frame
     *next,
     *prev;
+
 };
 
 struct vwm_win {
-  char *name;
+  char
+    *name;
 
-  vt_string
+  string_t
     *render,
     *separators_buf;
 
@@ -280,6 +295,9 @@ struct vwm_win {
   vwm_win
     *next,
     *prev;
+
+  vwm_win_self self;
+  vwm_frame_self frame;
 };
 
 struct vwm_prop {
@@ -287,7 +305,7 @@ struct vwm_prop {
 
   char *tmpdir;
 
-  vt_string
+  string_t
     *shell,
     *editor;
 
@@ -391,6 +409,182 @@ private char *path_basename (const char *name) {
   return p;
 }
 
+#define CONTINUE_ON_EXPECTED_ERRNO(fd__)          \
+  if (errno == EINTR) continue;                   \
+  if (errno == EAGAIN) {                          \
+    struct timeval tv;                            \
+    fd_set read_fd;                               \
+    FD_ZERO(&read_fd);                            \
+    FD_SET(fd, &read_fd);                         \
+    tv.tv_sec = 0;                                \
+    tv.tv_usec = 100000;                          \
+    select (fd__ + 1, &read_fd, NULL, NULL, &tv); \
+    continue;                                     \
+   } do {} while (0)
+
+private int fd_read (int fd, char *buf, size_t len) {
+  if (1 > len)
+    return NOTOK;
+
+  char *s = buf;
+  ssize_t bts;
+  int tbts = 0;
+
+  while (1) {
+    if (NOTOK == (bts = read (fd, s, len))) {
+      CONTINUE_ON_EXPECTED_ERRNO (fd);
+      return NOTOK;
+    }
+
+    tbts += bts;
+    if (tbts == (int) len || bts == 0)
+      break;
+
+    s += bts;
+  }
+
+  buf[tbts] = '\0';
+  return bts;
+}
+
+private int fd_write (int fd, char *buf, size_t len) {
+  int retval = len;
+  int bts;
+
+  while (len > 0) {
+    if (NOTOK == (bts = write (fd, buf, len))) {
+      CONTINUE_ON_EXPECTED_ERRNO (fd);
+      return NOTOK;
+    }
+
+    len -= bts;
+    buf += bts;
+  }
+
+  return retval;
+}
+
+private void fd_set_size (int fd, int rows, int cols) {
+  struct winsize wsiz;
+  wsiz.ws_row = rows;
+  wsiz.ws_col = cols;
+  wsiz.ws_xpixel = 0;
+  wsiz.ws_ypixel = 0;
+  ioctl (fd, TIOCSWINSZ, &wsiz);
+}
+
+private size_t byte_cp (char *dest, const char *src, size_t nelem) {
+  const char *sp = src;
+  size_t len = 0;
+
+  while (len < nelem and *sp) { // this differs in memcpy()
+    dest[len] = *sp++;
+    len++;
+  }
+
+  return len;
+}
+
+private size_t cstring_cp (char *dest, size_t dest_len, const char *src, size_t nelem) {
+  size_t num = (nelem > (dest_len - 1) ? dest_len - 1 : nelem);
+  size_t len = (NULL is src ? 0 : byte_cp (dest, src, num));
+  dest[len] = '\0';
+  return len;
+}
+
+private int cstring_eq (const char *sa, const char *sb) {
+  const uchar *spa = (const uchar *) sa;
+  const uchar *spb = (const uchar *) sb;
+  for (; *spa == *spb; spa++, spb++)
+    if (*spa == 0) return 1;
+
+  return 0;
+}
+
+private size_t string_align (size_t size) {
+  size_t sz = 8 - (size % 8);
+  sz = sizeof (char) * (size + (sz < 8 ? sz : 0));
+  return sz;
+}
+
+/* this is not like realloc(), as size here is the extra size */
+private string_t *string_reallocate (string_t *this, size_t size) {
+  size_t sz = string_align (this->mem_size + size + 1);
+  this->bytes = Realloc (this->bytes, sz);
+  this->mem_size = sz;
+  return this;
+}
+
+private string_t *string_new (size_t size) {
+  string_t *this = Alloc (sizeof (string_t));
+  size_t sz = (size <= 0 ? 8 : string_align (size));
+  this->bytes = Alloc (sz);
+  this->mem_size = sz;
+  this->num_bytes = 0;
+  *this->bytes = '\0';
+  return this;
+}
+
+private string_t *string_new_with_len (const char *bytes, size_t len) {
+  string_t *new = Alloc (sizeof (string_t));
+  size_t sz = string_align (len + 1);
+  char *buf = Alloc (sz);
+  byte_cp (buf, bytes, len);
+  buf[len] = '\0';
+  new->bytes = buf;
+  new->num_bytes = len;
+  new->mem_size = sz;
+  return new;
+}
+
+private string_t *string_new_with (const char *bytes) {
+  size_t len = (NULL is bytes ? 0 : bytelen (bytes));
+  return string_new_with_len (bytes, len); /* this succeeds even if bytes is NULL */
+}
+
+private void string_release (string_t *this) {
+  free (this->bytes);
+  free (this);
+}
+
+private string_t *string_clear (string_t *this) {
+  this->bytes[0] = '\0';
+  this->num_bytes = 0;
+  return this;
+}
+
+private string_t *string_clear_at (string_t *this, int idx) {
+  if (0 > idx) idx += this->num_bytes;
+  if (idx < 0) return this;
+  if (idx > (int) this->num_bytes) idx = this->num_bytes;
+  this->bytes[idx] = '\0';
+  this->num_bytes = idx;
+  return this;
+}
+
+private string_t *string_append_with_len (string_t *this, char *bytes, size_t len) {
+  size_t bts = this->num_bytes + len;
+  if (bts >= this->mem_size)
+    this = string_reallocate (this, bts - this->mem_size + 1);
+
+  byte_cp (this->bytes + this->num_bytes, bytes, len);
+  this->num_bytes += len;
+  this->bytes[this->num_bytes] = '\0';
+  return this;
+}
+
+private string_t *string_append (string_t *this, char *bytes) {
+  return string_append_with_len (this, bytes, bytelen (bytes));
+}
+
+private string_t *string_append_byte (string_t *this, char c) {
+  int bts = this->mem_size - (this->num_bytes + 2);
+  if (1 > bts) string_reallocate (this, 8);
+  this->bytes[this->num_bytes++] = c;
+  this->bytes[this->num_bytes] = '\0';
+  return this;
+}
+
 private void dirlist_free (dirlist_t *dlist) {
   if (NULL is dlist->list)
     return;
@@ -414,7 +608,7 @@ private dirlist_t dir_list (char *dir) {
   ifnot (dir_is_directory (dir))
     return dlist;
 
-  strncpy (dlist.dir, dir, PATH_MAX - 1);
+  cstring_cp (dlist.dir, PATH_MAX, dir, PATH_MAX - 1);
 
   DIR *dh = NULL;
   struct dirent *dp;
@@ -445,7 +639,7 @@ private dirlist_t dir_list (char *dir) {
     }
 
     dlist.list[dlist.len] = Alloc ((size_t) len + 1);
-    strncpy (dlist.list[dlist.len], dp->d_name, len + 1);
+    cstring_cp (dlist.list[dlist.len], len + 1, dp->d_name, len);
     dlist.len++;
   }
 
@@ -509,7 +703,7 @@ again:
     }
 
     for (int i = 0; i < dlist.len; i++)
-      if (0 is strcmp (name, dlist.list[i]))
+      if (cstring_eq (name, dlist.list[i]))
         goto again;
 
     found = 1;
@@ -528,7 +722,7 @@ again:
       goto theend;
     }
 
-  strncpy (t.fname, name, len);
+  cstring_cp (t.fname, len + 1, name, len);
   }
 
 theend:
@@ -536,209 +730,40 @@ theend:
   return t;
 }
 
-#define CONTINUE_ON_EXPECTED_ERRNO(fd__)          \
-  if (errno == EINTR) continue;                   \
-  if (errno == EAGAIN) {                          \
-    struct timeval tv;                            \
-    fd_set read_fd;                               \
-    FD_ZERO(&read_fd);                            \
-    FD_SET(fd, &read_fd);                         \
-    tv.tv_sec = 0;                                \
-    tv.tv_usec = 100000;                          \
-    select (fd__ + 1, &read_fd, NULL, NULL, &tv); \
-    continue;                                     \
-   } do {} while (0)
+private vwm_term *vwm_new_term (vwm_t *this) {
+  ifnot (NULL is $my(term)) return $my(term);
 
-private int fd_read (int fd, char *buf, size_t len) {
-  if (1 > len)
-    return NOTOK;
-
-  char *s = buf;
-  ssize_t bts;
-  int tbts = 0;
-
-  while (1) {
-    if (NOTOK == (bts = read (fd, s, len))) {
-      CONTINUE_ON_EXPECTED_ERRNO (fd);
-      return NOTOK;
-    }
-
-    tbts += bts;
-    if (tbts == (int) len || bts == 0)
-      break;
-
-    s += bts;
-  }
-
-  buf[tbts] = '\0';
-  return bts;
-}
-
-private int fd_write (int fd, char *buf, size_t len) {
-  int retval = len;
-  int bts;
-
-  while (len > 0) {
-    if (NOTOK == (bts = write (fd, buf, len))) {
-      CONTINUE_ON_EXPECTED_ERRNO (fd);
-      return NOTOK;
-    }
-
-    len -= bts;
-    buf += bts;
-  }
-
-  return retval;
-}
-
-
-private size_t byte_cp (char *dest, const char *src, size_t nelem) {
-  const char *sp = src;
-  size_t len = 0;
-
-  while (len < nelem and *sp) { // this differs in memcpy()
-    dest[len] = *sp++;
-    len++;
-  }
-
-  return len;
-}
-
-private size_t cstring_cp (char *dest, size_t dest_len, const char *src, size_t nelem) {
-  size_t num = (nelem > (dest_len - 1) ? dest_len - 1 : nelem);
-  size_t len = (NULL is src ? 0 : byte_cp (dest, src, num));
-  dest[len] = '\0';
-  return len;
-}
-
-private size_t string_align (size_t size) {
-  size_t sz = 8 - (size % 8);
-  sz = sizeof (char) * (size + (sz < 8 ? sz : 0));
-  return sz;
-}
-
-/* this is not like realloc(), as size here is the extra size */
-private vt_string *vt_string_reallocate (vt_string *this, size_t size) {
-  size_t sz = string_align (this->mem_size + size + 1);
-  this->bytes = Realloc (this->bytes, sz);
-  this->mem_size = sz;
-  return this;
-}
-
-private vt_string *vt_string_new (size_t size) {
-  vt_string *this = Alloc (sizeof (vt_string));
-  size_t sz = (size <= 0 ? 8 : string_align (size));
-  this->bytes = Alloc (sz);
-  this->mem_size = sz;
-  this->num_bytes = 0;
-  *this->bytes = '\0';
-  return this;
-}
-
-private vt_string *vt_string_new_with_len (const char *bytes, size_t len) {
-  vt_string *new = Alloc (sizeof (vt_string));
-  size_t sz = string_align (len + 1);
-  char *buf = Alloc (sz);
-  byte_cp (buf, bytes, len);
-  buf[len] = '\0';
-  new->bytes = buf;
-  new->num_bytes = len;
-  new->mem_size = sz;
-  return new;
-}
-
-private vt_string *vt_string_new_with (const char *bytes) {
-  size_t len = (NULL is bytes ? 0 : bytelen (bytes));
-  return vt_string_new_with_len (bytes, len); /* this succeeds even if bytes is NULL */
-}
-
-private void vt_string_release (vt_string *this) {
-  free (this->bytes);
-  free (this);
-}
-
-private vt_string *vt_string_clear (vt_string *this) {
-  this->bytes[0] = '\0';
-  this->num_bytes = 0;
-  return this;
-}
-
-private vt_string *vt_string_clear_at (vt_string *this, int idx) {
-  if (0 > idx) idx += this->num_bytes;
-  if (idx < 0) return this;
-  if (idx > (int) this->num_bytes) idx = this->num_bytes;
-  this->bytes[idx] = '\0';
-  this->num_bytes = idx;
-  return this;
-}
-
-private vt_string *vt_string_append_with_len (vt_string *this, char *bytes, size_t len) {
-  size_t bts = this->num_bytes + len;
-  if (bts >= this->mem_size)
-    this = vt_string_reallocate (this, bts - this->mem_size + 1);
-
-  byte_cp (this->bytes + this->num_bytes, bytes, len);
-  this->num_bytes += len;
-  this->bytes[this->num_bytes] = '\0';
-  return this;
-}
-
-private vt_string *vt_string_append (vt_string *this, char *bytes) {
-  return vt_string_append_with_len (this, bytes, bytelen (bytes));
-}
-
-private vt_string *vt_string_append_byte (vt_string *this, char c) {
-  int bts = this->mem_size - (this->num_bytes + 2);
-  if (1 > bts) vt_string_reallocate (this, 8);
-  this->bytes[this->num_bytes++] = c;
-  this->bytes[this->num_bytes] = '\0';
-  return this;
-}
-
-public VtString_T __init_vt_string__ (void) {
-  return (VtString_T) {
-    .new = vt_string_new,
-    .clear = vt_string_clear,
-    .append = vt_string_append,
-    .release = vt_string_release,
-    .new_with = vt_string_new_with,
-    .clear_at = vt_string_clear_at,
-    .append_byte = vt_string_append_byte,
-    .new_with_len = vt_string_new_with_len,
-    .append_with_len = vt_string_append_with_len
-  };
-}
-
-private vwm_term *vwm_term_new (void) {
-  vwm_term *this = Alloc (sizeof (vwm_term));
-  this->lines = 24;
-  this->columns = 78;
-  this->in_fd = STDIN_FILENO;
-  this->out_fd = STDOUT_FILENO;
-  this->mode = 'o';
+  vwm_term *term = Alloc (sizeof (vwm_term));
+  term->lines = 24;
+  term->columns = 78;
+  term->in_fd = STDIN_FILENO;
+  term->out_fd = STDOUT_FILENO;
+  term->mode = 'o';
 
   char *term_name = getenv ("TERM");
   if (NULL is term_name) {
     fprintf (stderr, "TERM environment variable isn't set\n");
-    this->name = strdup ("vt100");
+    term->name = strdup ("vt100");
   } else {
-    if (0 is strcmp (term_name, "xterm"))
-      this->name = strdup ("xterm");
+    if (cstring_eq (term_name, "xterm"))
+      term->name = strdup ("xterm");
     else
-      this->name = strdup ("vt100");
+      term->name = strdup ("vt100");
   }
 
-  return this;
+  $my(term) = term;
+
+  return term;
 }
 
-private void vwm_term_release (vwm_term **thisp) {
-  if (NULL == *thisp) return;
+private void term_release (vwm_term **thisp) {
+  if (NULL is *thisp) return;
   free ((*thisp)->name);
   free (*thisp);
   *thisp = NULL;
 }
 
-private int vwm_term_sane_mode (vwm_term *this) {
+private int term_sane_mode (vwm_term *this) {
   if (this->mode == 's') return OK;
   if (isnotatty (this->in_fd)) return NOTOK;
 
@@ -762,7 +787,7 @@ private int vwm_term_sane_mode (vwm_term *this) {
   return OK;
 }
 
-private int vwm_term_orig_mode (vwm_term *this) {
+private int term_orig_mode (vwm_term *this) {
   if (this->mode == 'o') return OK;
   if (isnotatty (this->in_fd)) return NOTOK;
 
@@ -770,10 +795,11 @@ private int vwm_term_orig_mode (vwm_term *this) {
     ifnot (errno == EINTR) return NOTOK;
 
   this->mode = 'o';
+
   return OK;
 }
 
-private int vwm_term_raw_mode (vwm_term *this) {
+private int term_raw_mode (vwm_term *this) {
    if (this->mode == 'r') return OK;
    if (isnotatty (this->in_fd)) return NOTOK;
 
@@ -797,7 +823,7 @@ private int vwm_term_raw_mode (vwm_term *this) {
   return OK;
 }
 
-private int vwm_term_cursor_get_ptr_pos (vwm_term *this, int *row, int *col) {
+private int term_cursor_get_ptr_pos (vwm_term *this, int *row, int *col) {
   if (NOTOK == TERM_SEND_ESC_SEQ (TERM_GET_PTR_POS))
     return NOTOK;
 
@@ -822,26 +848,26 @@ private int vwm_term_cursor_get_ptr_pos (vwm_term *this, int *row, int *col) {
   return OK;
 }
 
-private void vwm_term_cursor_set_ptr_pos (vwm_term *this, int row, int col) {
+private void term_cursor_set_ptr_pos (vwm_term *this, int row, int col) {
   char ptr[32];
   snprintf (ptr, 32, TERM_GOTO_PTR_POS_FMT, row, col);
   fd_write (this->out_fd, ptr, bytelen (ptr));
 }
 
-private void vwm_term_screen_clear (vwm_term *this) {
+private void term_screen_clear (vwm_term *this) {
   TERM_SEND_ESC_SEQ (TERM_SCREEN_CLEAR);
 }
 
-private void vwm_term_screen_save (vwm_term *this) {
+private void term_screen_save (vwm_term *this) {
   TERM_SEND_ESC_SEQ (TERM_SCREEN_SAVE);
 }
 
-private void vwm_term_screen_restore (vwm_term *this) {
+private void term_screen_restore (vwm_term *this) {
   TERM_SEND_ESC_SEQ (TERM_SCROLL_RESET);
   TERM_SEND_ESC_SEQ (TERM_SCREEN_RESTORE);
 }
 
-private void vwm_term_init_size (vwm_term *this, int *rows, int *cols) {
+private void term_init_size (vwm_term *this, int *rows, int *cols) {
   struct winsize wsiz;
 
   do {
@@ -854,11 +880,11 @@ private void vwm_term_init_size (vwm_term *this, int *rows, int *cols) {
   } while (errno == EINTR);
 
   int orig_row, orig_col;
-  vwm_term_cursor_get_ptr_pos (this, &orig_row, &orig_col);
+  term_cursor_get_ptr_pos (this, &orig_row, &orig_col);
 
   TERM_SEND_ESC_SEQ (TERM_LAST_RIGHT_CORNER);
-  vwm_term_cursor_get_ptr_pos (this, rows, cols);
-  vwm_term_cursor_set_ptr_pos (this, orig_row, orig_col);
+  term_cursor_get_ptr_pos (this, rows, cols);
+  term_cursor_set_ptr_pos (this, orig_row, orig_col);
 }
 
 private void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
@@ -875,8 +901,8 @@ private void vwm_set_editor (vwm_t *this, char *editor) {
   if (NULL is editor) return;
   size_t len = bytelen (editor);
   ifnot (len) return;
-  VtString.clear ($my(editor));
-  VtString.append_with_len ($my(editor), editor, len);
+  string_clear ($my(editor));
+  string_append_with_len ($my(editor), editor, len);
 }
 
 private void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
@@ -895,8 +921,8 @@ private void vwm_set_shell (vwm_t *this, char *shell) {
   if (NULL is shell) return;
   size_t len = bytelen (shell);
   ifnot (len) return;
-  VtString.clear ($my(shell));
-  VtString.append_with_len ($my(shell), shell, len);
+  string_clear ($my(shell));
+  string_append_with_len ($my(shell), shell, len);
 }
 
 /* This is an extended version of the same function of the kilo editor at:
@@ -907,7 +933,8 @@ private void vwm_set_shell (vwm_t *this, char *shell) {
  * of such sequence
  */
 
-private utf8 getkey (int infd) {
+private utf8 vwm_getkey (vwm_t *this, int infd) {
+  (void) this;
   char c;
   int n;
   char buf[5];
@@ -1075,12 +1102,17 @@ private void vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
   if (NULL is dir) {
     len = bytelen (TMPDIR);
     $my(tmpdir) = Alloc (len + 1);
-    strncpy ($my(tmpdir), TMPDIR, len + 1);
+    cstring_cp ($my(tmpdir), len + 1, TMPDIR, len);
     return;
   }
 
   $my(tmpdir) = Alloc (len + 1);
-  strncpy ($my(tmpdir), dir, len + 1);
+  cstring_cp ($my(tmpdir), len + 1, dir, len);
+}
+
+private vwm_win *vwm_set_current_at (vwm_t *this, int idx) {
+  DListSetCurrent ($myprop, idx);
+  return $my(current);
 }
 
 private int vwm_get_lines (vwm_t *this) {
@@ -1089,6 +1121,14 @@ private int vwm_get_lines (vwm_t *this) {
 
 private int vwm_get_columns (vwm_t *this) {
   return $my(term)->columns;
+}
+
+private int vwm_get_win_idx (vwm_t *this, vwm_win *win) {
+  int idx = DListGetIdx ($myprop, vwm_win, win);
+  if (idx is INDEX_ERROR)
+    return NOTOK;
+
+  return idx;
 }
 
 private vwm_win *vwm_get_current_win (vwm_t *this) {
@@ -1107,12 +1147,16 @@ private int vwm_get_state (vwm_t *this) {
   return $my(state);
 }
 
-private vt_string *vwm_get_shell (vwm_t *this) {
-  return $my(shell);
+private char *vwm_get_shell (vwm_t *this) {
+  return $my(shell)->bytes;
 }
 
-private vt_string *vwm_get_editor (vwm_t *this) {
-  return $my(editor);
+private char  *vwm_get_editor (vwm_t *this) {
+  return $my(editor)->bytes;
+}
+
+private vwm_win *vwm_pop_win_at (vwm_t *this, int idx) {
+  return DListPopAt ($myprop, vwm_win, idx);
 }
 
 private int **vwm_alloc_ints (int rows, int cols, int val) {
@@ -1317,110 +1361,110 @@ private void vt_write (char *buf, FILE *fp) {
   fflush (fp);
 }
 
-private vt_string *vt_insline (vt_string *buf, int num) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dL", num));
+private string_t *vt_insline (string_t *buf, int num) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dL", num));
 }
 
-private vt_string *vt_insertchar (vt_string *buf, int numcols) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d@", numcols));
+private string_t *vt_insertchar (string_t *buf, int numcols) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d@", numcols));
 }
 
-private vt_string *vt_savecursor (vt_string *buf) {
-  return VtString.append (buf, "\0337");
+private string_t *vt_savecursor (string_t *buf) {
+  return string_append (buf, "\0337");
 }
 
-private vt_string *vt_restcursor (vt_string *buf) {
-  return VtString.append (buf, "\0338");
+private string_t *vt_restcursor (string_t *buf) {
+  return string_append (buf, "\0338");
 }
 
-private vt_string *vt_clreol (vt_string *buf) {
-  return VtString.append (buf, "\033[K");
+private string_t *vt_clreol (string_t *buf) {
+  return string_append (buf, "\033[K");
 }
 
-private vt_string *vt_clrbgl (vt_string *buf) {
-  return VtString.append (buf, "\033[1K");
+private string_t *vt_clrbgl (string_t *buf) {
+  return string_append (buf, "\033[1K");
 }
 
-private vt_string *vt_clrline (vt_string *buf) {
-  return VtString.append (buf, "\033[2K");
+private string_t *vt_clrline (string_t *buf) {
+  return string_append (buf, "\033[2K");
 }
 
-private vt_string *vt_delunder (vt_string *buf, int num) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dP", num));
+private string_t *vt_delunder (string_t *buf, int num) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dP", num));
 }
 
-private vt_string *vt_delline (vt_string *buf, int num) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dM", num));
+private string_t *vt_delline (string_t *buf, int num) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dM", num));
 }
 
-private vt_string *vt_attr_reset (vt_string *buf) {
-  return VtString.append (buf, "\033[m");
+private string_t *vt_attr_reset (string_t *buf) {
+  return string_append (buf, "\033[m");
 }
 
-private vt_string *vt_reverse (vt_string *buf, int on) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
+private string_t *vt_reverse (string_t *buf, int on) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
 }
 
-private vt_string *vt_underline (vt_string *buf, int on) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
+private string_t *vt_underline (string_t *buf, int on) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
 }
 
-private vt_string *vt_bold (vt_string *buf, int on) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
+private string_t *vt_bold (string_t *buf, int on) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
 }
 
-private vt_string *vt_italic (vt_string *buf, int on) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
+private string_t *vt_italic (string_t *buf, int on) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
 }
 
-private vt_string *vt_blink (vt_string *buf, int on) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
+private string_t *vt_blink (string_t *buf, int on) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
 }
 
-private vt_string *vt_bell (vt_string *buf) {
-  return VtString.append (buf, "\007");
+private string_t *vt_bell (string_t *buf) {
+  return string_append (buf, "\007");
 }
 
-private vt_string *vt_setfg (vt_string *buf, int color) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
+private string_t *vt_setfg (string_t *buf, int color) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
-private vt_string *vt_setbg (vt_string *buf, int color) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
+private string_t *vt_setbg (string_t *buf, int color) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
-private vt_string *vt_left (vt_string *buf, int count) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dD", count));
+private string_t *vt_left (string_t *buf, int count) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dD", count));
 }
 
-private vt_string *vt_right (vt_string *buf, int count) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dC", count));
+private string_t *vt_right (string_t *buf, int count) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dC", count));
 }
 
-private vt_string *vt_up (vt_string *buf, int numrows) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dA", numrows));
+private string_t *vt_up (string_t *buf, int numrows) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dA", numrows));
 }
 
-private vt_string *vt_down (vt_string *buf, int numrows) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dB", numrows));
+private string_t *vt_down (string_t *buf, int numrows) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dB", numrows));
 }
 
-private vt_string *vt_revscroll (vt_string *buf) {
-  return VtString.append (buf, "\033M");
+private string_t *vt_revscroll (string_t *buf) {
+  return string_append (buf, "\033M");
 }
 
-private vt_string *vt_setscroll (vt_string *buf, int first, int last) {
+private string_t *vt_setscroll (string_t *buf, int first, int last) {
   if (0 is first and 0 is last)
-    return VtString.append (buf, "\033[r");
+    return string_append (buf, "\033[r");
   else
-    return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
+    return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
 }
 
-private vt_string *vt_goto (vt_string *buf, int row, int col) {
-  return VtString.append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
+private string_t *vt_goto (string_t *buf, int row, int col) {
+  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
 }
 
-private vt_string *vt_attr_check (vt_string *buf, int pixel, int lastattr, uchar *currattr) {
+private string_t *vt_attr_check (string_t *buf, int pixel, int lastattr, uchar *currattr) {
   uchar
     simplepixel,
     lastpixel,
@@ -1511,7 +1555,7 @@ checkchange:
   return buf;
 }
 
-private vt_string *vt_attr_set (vt_string *buf, int textattr) {
+private string_t *vt_attr_set (string_t *buf, int textattr) {
   vt_attr_reset (buf);
 
   if (textattr & BOLD)
@@ -1532,53 +1576,53 @@ private vt_string *vt_attr_set (vt_string *buf, int textattr) {
   return buf;
 }
 
-private vt_string *vt_frame_attr_set (vwm_frame *frame, vt_string *buf) {
+private string_t *vt_frame_attr_set (vwm_frame *frame, string_t *buf) {
   uchar on = NORMAL;
   vt_attr_reset (buf);
   return vt_attr_check (buf, 0, frame->textattr, &on);
 }
 
-private vt_string *vt_append (vwm_frame *frame, vt_string *buf, utf8 c) {
+private string_t *vt_append (vwm_frame *frame, string_t *buf, utf8 c) {
   if (frame->col_pos > frame->num_cols) {
     if (frame->row_pos < frame->last_row)
       frame->row_pos++;
     else
       vt_video_scroll (frame, 1);
 
-    VtString.append (buf, "\r\n");
+    string_append (buf, "\r\n");
     frame->col_pos = 1;
   }
 
   vt_video_add (frame, c);
 
   if (frame->mb_len)
-    VtString.append_with_len (buf, frame->mb_buf, frame->mb_len);
+    string_append_with_len (buf, frame->mb_buf, frame->mb_len);
   else
-    VtString.append_byte (buf, c);
+    string_append_byte (buf, c);
 
   frame->col_pos++;
   return buf;
 }
 
-private vt_string *vt_keystate_print (vt_string *buf, int application) {
+private string_t *vt_keystate_print (string_t *buf, int application) {
   if (application)
-    return VtString.append (buf, "\033=\033[?1h");
+    return string_append (buf, "\033=\033[?1h");
 
-  return VtString.append (buf, "\033>\033[?1l");
+  return string_append (buf, "\033>\033[?1l");
 }
 
-private vt_string *vt_altcharset (vt_string *buf, int charset, int type) {
+private string_t *vt_altcharset (string_t *buf, int charset, int type) {
   switch (type) {
     case UK_CHARSET:
-      VtString.append_with_len (buf, STR_FMT (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case US_CHARSET:
-      VtString.append_with_len (buf, STR_FMT (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case GRAPHICS:
-      VtString.append_with_len (buf, STR_FMT (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
       break;
 
     default:  break;
@@ -1586,7 +1630,7 @@ private vt_string *vt_altcharset (vt_string *buf, int charset, int type) {
   return buf;
 }
 
-private vt_string *vt_esc_scan (vwm_frame *, vt_string *, int);
+private string_t *vt_esc_scan (vwm_frame *, string_t *, int);
 
 private void vt_frame_esc_set (vwm_frame *frame) {
   frame->process_char = vt_esc_scan;
@@ -1613,7 +1657,7 @@ private void vt_frame_reset (vwm_frame *frame) {
   vt_frame_esc_set (frame);
 }
 
-private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_brace_q (vwm_frame *frame, string_t *buf, int c) {
   if (ISDIGIT (c)) {
     *frame->cur_param *= 10;
     *frame->cur_param += (c - '0');
@@ -1634,15 +1678,15 @@ private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
           break;
 
         case 7:
-          VtString.append_with_len (buf, TERM_AUTOWRAP_ON, TERM_AUTOWRAP_ON_LEN);
+          string_append_with_len (buf, TERM_AUTOWRAP_ON, TERM_AUTOWRAP_ON_LEN);
           break;
 
         case 25:
-          VtString.append_with_len (buf, TERM_CURSOR_SHOW, TERM_CURSOR_SHOW_LEN);
+          string_append_with_len (buf, TERM_CURSOR_SHOW, TERM_CURSOR_SHOW_LEN);
           break;
 
         case 47:
-          VtString.append_with_len (buf, TERM_SCREEN_SAVE, TERM_SCREEN_SAVE_LEN);
+          string_append_with_len (buf, TERM_SCREEN_SAVE, TERM_SCREEN_SAVE_LEN);
           break;
 
         case 2: /* Set ansi mode */
@@ -1665,15 +1709,15 @@ private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
         break;
 
         case 7:
-          VtString.append_with_len (buf, TERM_AUTOWRAP_OFF, TERM_AUTOWRAP_OFF_LEN);
+          string_append_with_len (buf, TERM_AUTOWRAP_OFF, TERM_AUTOWRAP_OFF_LEN);
           break;
 
       case 25:
-        VtString.append_with_len (buf, TERM_CURSOR_HIDE, TERM_CURSOR_HIDE_LEN);
+        string_append_with_len (buf, TERM_CURSOR_HIDE, TERM_CURSOR_HIDE_LEN);
         break;
 
       case 47:
-        VtString.append_with_len (buf, TERM_SCREEN_RESTORE, TERM_SCREEN_RESTORE_LEN);
+        string_append_with_len (buf, TERM_SCREEN_RESTORE, TERM_SCREEN_RESTORE_LEN);
         break;
 
       case 2: /* Set VT52 mode */
@@ -1696,7 +1740,7 @@ private vt_string *vt_esc_brace_q (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_lparen (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_lparen (vwm_frame *frame, string_t *buf, int c) {
   /* Return inside the switch to prevent reset_esc() */
   switch (c) {
     case '\030': /* Processed as escape cancel */
@@ -1731,7 +1775,7 @@ private vt_string *vt_esc_lparen (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_rparen (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_rparen (vwm_frame *frame, string_t *buf, int c) {
   switch (c) {
     case '\030': /* Processed as escape cancel */
     case '\032':
@@ -1764,7 +1808,7 @@ private vt_string *vt_esc_rparen (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_pound (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_pound (vwm_frame *frame, string_t *buf, int c) {
   switch (c)   /* Line attributes not supported */ {
     case '3':  /* Double height (top half) */
     case '4':  /* Double height (bottom half) */
@@ -1779,7 +1823,7 @@ private vt_string *vt_esc_pound (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_process_m (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
   int idx;
   switch (c) {
     case 0: /* Turn all attributes off */
@@ -1870,7 +1914,7 @@ private vt_string *vt_process_m (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
   int
     i,
     newx,
@@ -2031,7 +2075,7 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
           vt_left (buf, frame->esc_param[0]);
         } else {
           frame->col_pos = 1;
-          VtString.append (buf, "\r");
+          string_append (buf, "\r");
         }
 
         break;
@@ -2087,11 +2131,11 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
 
             newx = frame->row_pos;
             vt_savecursor (buf);
-            VtString.append (buf, "\r");
+            string_append (buf, "\r");
 
             while (newx++ < frame->num_rows) {
               vt_clreol (buf);
-              VtString.append (buf, "\n");
+              string_append (buf, "\n");
             }
 
             vt_clreol (buf);
@@ -2104,7 +2148,7 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
 
             newx = frame->row_pos;
             vt_savecursor (buf);
-            VtString.append (buf, "\r");
+            string_append (buf, "\r");
 
             while (--newx > 0) {
               vt_clreol (buf);
@@ -2124,11 +2168,11 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
             frame->col_pos = 1;
             newx = frame->row_pos;
             vt_savecursor (buf);
-            VtString.append (buf, "\r");
+            string_append (buf, "\r");
 
             while (newx++ < frame->num_rows) {
               vt_clreol (buf);
-              VtString.append (buf, "\n");
+              string_append (buf, "\n");
             }
 
             vt_clreol (buf);
@@ -2210,7 +2254,7 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
           }
           break;
 
-      case 'c': /* Request terminal identification string */
+      case 'c': /* Request terminal identification string_t */
         /* Respond with "I am a vt102" */
         write (frame->fd, "\033[?6c", 5);
         break;
@@ -2224,7 +2268,7 @@ private vt_string *vt_esc_brace (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_e (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
   /* Return inside the switch to prevent reset_esc() */
   switch (c) {
     case '\030': /* Processed as escape cancel */
@@ -2253,7 +2297,7 @@ private vt_string *vt_esc_e (vwm_frame *frame, vt_string *buf, int c) {
       else
         vt_video_scroll (frame, 1);
 
-      VtString.append (buf, "\n");
+      string_append (buf, "\n");
       break;
 
     case 'M': /* Reverse scroll (move up; scroll at top) */
@@ -2272,7 +2316,7 @@ private vt_string *vt_esc_e (vwm_frame *frame, vt_string *buf, int c) {
         vt_video_scroll (frame, 1);
 
       frame->col_pos = 1;
-      VtString.append (buf, "\r\n");
+      string_append (buf, "\r\n");
       break;
 
     case '7': /* Save cursor and attribute */
@@ -2316,7 +2360,7 @@ private vt_string *vt_esc_e (vwm_frame *frame, vt_string *buf, int c) {
       frame->tabstops[frame->col_pos - 1] = 1;
       break;
 
-    case 'Z': /* Request terminal identification string */
+    case 'Z': /* Request terminal identification string_t */
       /* Respond with "I am a vt102" */
       write (frame->fd, "\033[?6c", 5);
       break;
@@ -2334,7 +2378,7 @@ private vt_string *vt_esc_e (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private vt_string *vt_esc_scan (vwm_frame *frame, vt_string *buf, int c) {
+private string_t *vt_esc_scan (vwm_frame *frame, string_t *buf, int c) {
   switch (c) {
     case '\000': /* NULL (fill character) */
       break;
@@ -2342,7 +2386,7 @@ private vt_string *vt_esc_scan (vwm_frame *frame, vt_string *buf, int c) {
     case '\003': /* EXT  (half duplex turnaround) */
     case '\004': /* EOT  (can be disconnect char) */
     case '\005': /* ENQ  (generate answerback) */
-      VtString.append_byte (buf, c);
+      string_append_byte (buf, c);
       break;
 
     case '\007': /* BEL  (sound terminal bell) */
@@ -2376,19 +2420,19 @@ private vt_string *vt_esc_scan (vwm_frame *frame, vt_string *buf, int c) {
       else
         vt_video_scroll (frame, 1);
 
-      VtString.append (buf, "\n");
+      string_append (buf, "\n");
       break;
 
     case '\r': /* Move cursor to left margin */
       frame->col_pos = 1;
-      VtString.append (buf, "\r");
+      string_append (buf, "\r");
       break;
 
     case '\016': /* S0 (selects G1 charset) */
     case '\017': /* S1 (selects G0 charset) */
     case '\021': /* XON (continue transmission) */
     case '\022': /* XOFF (stop transmission) */
-      VtString.append_byte (buf, c);
+      string_append_byte (buf, c);
       break;
 
     case '\030': /* Processed as escape cancel */
@@ -2442,54 +2486,44 @@ private vt_string *vt_esc_scan (vwm_frame *frame, vt_string *buf, int c) {
   return buf;
 }
 
-private void vwm_win_set_frame (vwm_win *this, vwm_frame *frame) {
-  VtString.clear (frame->output);
+private void win_set_frame (vwm_win *this, vwm_frame *frame) {
+  string_clear (frame->render);
 
-  vt_setscroll (frame->output, frame->scroll_first_row + frame->first_row - 1,
+  vt_setscroll (frame->render, frame->scroll_first_row + frame->first_row - 1,
       frame->last_row + frame->first_row - 1);
 
   if (this->draw_separators) {
     this->draw_separators = 0;
-    VtString.append_with_len (frame->output, this->separators_buf->bytes, this->separators_buf->num_bytes);
+    string_append_with_len (frame->render, this->separators_buf->bytes, this->separators_buf->num_bytes);
   }
 
-  vt_goto (frame->output, frame->row_pos + frame->first_row - 1, frame->col_pos);
+  vt_goto (frame->render, frame->row_pos + frame->first_row - 1, frame->col_pos);
 
   ifnot (NULL is this->last_frame) {
     ifnot (frame->key_state is this->last_frame->key_state)
-      vt_keystate_print (frame->output, frame->key_state);
+      vt_keystate_print (frame->render, frame->key_state);
 
     ifnot (frame->textattr is this->last_frame->textattr)
-      vt_attr_set (frame->output, frame->textattr);
+      vt_attr_set (frame->render, frame->textattr);
 
     for (int i = 0; i < NCHARSETS; i++)
       if (frame->charset[i] isnot this->last_frame->charset[i])
-        vt_altcharset (frame->output, i, frame->charset[i]);
+        vt_altcharset (frame->render, i, frame->charset[i]);
   }
 
-  vt_write (frame->output->bytes, stdout);
+  vt_write (frame->render->bytes, stdout);
 }
 
-private void vwm_frame_set_by_idx (vwm_win *this, int idx) {
-  if (idx isnot this->cur_idx) {
-    this->last_frame = this->current;
-    DListSetCurrent (this, idx);
-  }
-
-  vwm_frame *frame = this->current;
-  vwm_win_set_frame (this, frame);
-}
-
-private void vt_process_output (vwm_frame *frame, char *buf, int len) {
-  VtString.clear (frame->output);
+private void frame_process_output (vwm_frame *this, char *buf, int len) {
+  string_clear (this->render);
 
   while (len--)
-    frame->process_char (frame, frame->output, (uchar) *buf++);
+    this->process_char (this, this->render, (uchar) *buf++);
 
-  vt_write (frame->output->bytes, stdout);
+  vt_write (this->render->bytes, stdout);
 }
 
-private void frame_argv_release (vwm_frame *this) {
+private void frame_release_argv (vwm_frame *this) {
   if (NULL is this->argv) return;
   for (int i = 0; i <= this->argc; i++)
     free (this->argv[i]);
@@ -2498,11 +2532,11 @@ private void frame_argv_release (vwm_frame *this) {
   this->argc = 0;
 }
 
-private void vwm_frame_set_command (vwm_frame *this, char *command) {
+private void frame_set_command (vwm_frame *this, char *command) {
   if (NULL is command or 0 is bytelen (command))
     return;
 
-  frame_argv_release (this);
+  self(release_argv);
 
   char *sp = command;
   char *tokbeg;
@@ -2549,13 +2583,13 @@ add_arg:
   return;
 
 theerror:
-  frame_argv_release (this);
+  self(release_argv);
 }
 
-private void vwm_frame_set_argv (vwm_frame *this, int argc, char **argv) {
+private void frame_set_argv (vwm_frame *this, int argc, char **argv) {
   if (argc <= 0) return;
 
-  frame_argv_release (this);
+  self(release_argv);
 
   this->argv = Alloc (sizeof (char *) * (argc + 1));
   for (int i = 0; i < argc; i++) {
@@ -2568,39 +2602,73 @@ private void vwm_frame_set_argv (vwm_frame *this, int argc, char **argv) {
   this->argc = argc;
 }
 
-private void vwm_frame_set_fd (vwm_frame *this, int fd) {
+private void frame_set_fd (vwm_frame *this, int fd) {
   this->fd = fd;
 }
 
-private int vwm_frame_get_fd (vwm_frame *this) {
+private int frame_get_fd (vwm_frame *this) {
   return this->fd;
 }
 
-private pid_t vwm_frame_get_pid (vwm_frame *this) {
+private pid_t frame_get_pid (vwm_frame *this) {
   return this->pid;
 }
 
-private void vwm_frame_kill_proc (vwm_frame *frame) {
-  if (frame->pid is -1) return;
+private void frame_clear (vwm_frame *this) {
+  if (NULL is this) return;
 
-  kill (frame->pid, SIGHUP);
-  waitpid (frame->pid, NULL, 0);
-  frame->pid = -1;
-  frame->fd = -1;
-}
+  string_t *render = this->render;
 
-private void vwm_frame_check_pid (vwm_frame *frame) {
-  ifnot (0 is waitpid (frame->pid, &frame->status, WNOHANG)) {
-    frame->pid = -1;
-    frame->fd = -1;
+  string_clear (render);
+  vt_goto (render, this->first_row, 1);
+
+  for (int i = 0; i < this->num_rows; i++) {
+    for (int j = 0; j < this->num_cols; j++)
+      string_append_byte (render, ' ');
+
+    string_append (render, "\r\n");
   }
+
+  // clear the last newline, otherwise it scrolls one line more
+  string_clear_at (render, -1); // this is visible when there is one frame
+
+  vt_write (render->bytes, stdout);
 }
 
-private void vwm_frame_set_unimplemented (vwm_frame *this, Unimplemented cb) {
+private int frame_check_pid (vwm_frame *this) {
+  if (NULL is this or -1 is this->pid) return -1;
+
+  ifnot (0 is waitpid (this->pid, &this->status, WNOHANG)) {
+    this->pid = -1;
+    this->fd = -1;
+    self(clear);
+    return 0;
+  }
+
+  return this->pid;
+}
+
+private int frame_kill_proc (vwm_frame *this) {
+  if (this is NULL or this->pid is -1) return -1;
+
+  self(clear);
+
+  kill (this->pid, SIGHUP);
+  waitpid (this->pid, NULL, 0);
+  this->pid = -1;
+  this->fd = -1;
+  return 0;
+}
+
+private void frame_set_process_output (vwm_frame *this, ProcessOutput cb) {
+  this->process_output = cb;
+}
+
+private void frame_set_unimplemented (vwm_frame *this, Unimplemented cb) {
   this->unimplemented = cb;
 }
 
-private int vwm_frame_set_log (vwm_frame *this, char *fname, int remove_log) {
+private int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
   if (NULL is fname) {
     tmpname_t t = tmpfname (this->root->prop->tmpdir, "libvwm");
     if (-1 is t.fd)
@@ -2633,9 +2701,18 @@ private void def_unimplemented (vwm_frame *this, const char *fun, int c, int par
   fflush (UNFP);
 }
 
-private vwm_frame *vwm_win_frame_new (vwm_win *this, int rows, int first_row) {
+private int win_append_frame (vwm_win *this, vwm_frame *frame) {
+  return DListAppend (this, frame);
+}
+
+private vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   vwm_frame *frame = Alloc (sizeof (vwm_frame));
-  DListAppend (this, frame);
+  self(append_frame, frame);
+
+  frame->parent = this;
+  frame->root = this->parent;
+  frame->win = this->self;
+  frame->self = this->frame;
 
   frame->pid = -1;
   frame->argc = 0;
@@ -2649,7 +2726,9 @@ private vwm_frame *vwm_win_frame_new (vwm_win *this, int rows, int first_row) {
   frame->first_col = this->first_col;
   frame->mb_buf[0] = '\0';
   frame->mb_curlen = frame->mb_len = frame->mb_code = 0;
-  frame->output = vt_string_new (2048);
+  frame->render = string_new (2048);
+
+  frame->process_output = frame_process_output;
 
   frame->videomem = vwm_alloc_ints (frame->num_rows, frame->num_cols, 0);
   frame->colors = vwm_alloc_ints (frame->num_rows, frame->num_cols, COLOR_FG_NORMAL);
@@ -2667,23 +2746,24 @@ private vwm_frame *vwm_win_frame_new (vwm_win *this, int rows, int first_row) {
 
   frame->unimplemented = def_unimplemented;
 
-  frame->parent = this;
-  frame->root = this->parent;
-
   return frame;
 }
 
-private vwm_frame *vwm_win_add_frame (vwm_t *this, vwm_win *win, int argc, char **argv, int draw) {
-  if (win->length is win->max_frames) return NULL;
+private vwm_frame *win_pop_frame_at (vwm_win *this, int idx) {
+  return DListPopAt (this, vwm_frame, idx);
+}
 
-  win->num_separators = win->length;
+private vwm_frame *win_add_frame (vwm_win *this, int argc, char **argv, int draw) {
+  if (this->length is this->max_frames) return NULL;
+
+  this->num_separators = this->length;
   int frame_rows = 0;
-  int mod = my.win.frame_rows (win, win->length + 1, &frame_rows);
+  int mod = self(frame_rows, this->length + 1, &frame_rows);
   int
     num_rows = frame_rows + mod,
-    first_row = win->first_row;
+    first_row = this->first_row;
 
-  vwm_frame *frame = win->head;
+  vwm_frame *frame = this->head;
   while (frame) {
     frame->new_rows = num_rows;
     first_row += num_rows + 1;
@@ -2691,41 +2771,47 @@ private vwm_frame *vwm_win_add_frame (vwm_t *this, vwm_win *win, int argc, char 
     frame = frame->next;
   }
 
-  frame = my.frame.new (win, num_rows, first_row);
+  frame = self(new_frame, num_rows, first_row);
   frame->new_rows = num_rows;
 
   if (NULL isnot argv) {
-    my.frame.set.argv (frame, argc, argv);
-    my.frame.fork (this, frame);
+    Vframe.set.argv (frame, argc, argv);
+    Vframe.fork (frame);
   }
 
-  DListSetCurrent (win, win->length - 1);
-  vwm_win_on_resize (win, draw);
+  self(set.current_at, this->length - 1);
+  self(on_resize, draw);
   return frame;
 }
 
-private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, int draw) {
-  ifnot (win->length)
+private int win_frame_rows (vwm_win *this, int num_frames, int *frame_rows) {
+  int avail_rows = this->num_rows - this->num_separators;
+  *frame_rows = avail_rows / num_frames;
+  return avail_rows % num_frames;
+}
+
+private int win_delete_frame (vwm_win *this, vwm_frame *frame, int draw) {
+  ifnot (this->length)
     return OK;
 
-  win->num_separators--;
+  this->num_separators--;
 
-  if (1 is win->length) {
-    my.frame.kill_proc (win->head);
-    my.frame.release (win, 0);
+  if (1 is this->length) {
+    Vframe.kill_proc (frame);;
+    self(release_frame_at, 0);
   } else {
-    int is_last_frame = win->last_frame is frame;
-    int idx = DListGetIdx (win, vwm_frame, frame);
-    my.frame.kill_proc (frame);
-    my.frame.release (win, idx);
+    int is_last_frame = this->last_frame is frame;
+    int idx = self(get.frame_idx, frame);
+    Vframe.kill_proc (frame);;
+    self(release_frame_at, idx);
 
     int frame_rows = 0;
-    int mod = my.win.frame_rows (win, win->length, &frame_rows);
+    int mod = self(frame_rows, this->length, &frame_rows);
     int
       num_rows = frame_rows + mod,
-      first_row = win->first_row;
+      first_row = this->first_row;
 
-    frame = win->head;
+    frame = this->head;
     while (frame) {
       frame->new_rows = num_rows;
       first_row += num_rows + 1;
@@ -2734,16 +2820,16 @@ private int vwm_win_delete_frame (vwm_t *this, vwm_win *win, vwm_frame *frame, i
     }
 
     if (is_last_frame)
-      win->last_frame = win->current;
+      this->last_frame = this->current;
 
-    vwm_win_on_resize (win, draw);
+    self(on_resize, draw);
   }
 
   return OK;
 }
 
-private void vwm_win_frame_release (vwm_win *this, int idx) {
-  vwm_frame *frame = DListPopAt (this, vwm_frame, idx);
+private void win_release_frame_at (vwm_win *this, int idx) {
+  vwm_frame *frame = self(pop_frame_at, idx);
 
   if (NULL is frame) return;
 
@@ -2765,14 +2851,14 @@ private void vwm_win_frame_release (vwm_win *this, int idx) {
   free (frame->tabstops);
   free (frame->esc_param);
 
-  frame_argv_release (frame);
+  Vframe.release_argv (frame);;
 
-  vt_string_release (frame->output);
+  string_release (frame->render);
 
   free (frame);
 }
 
-private void vwm_frame_on_resize (vwm_frame *this, int rows, int cols) {
+private void frame_on_resize (vwm_frame *this, int rows, int cols) {
   int **videomem = vwm_alloc_ints (rows, cols, 0);
   int **colors = vwm_alloc_ints (rows, cols, COLOR_FG_NORMAL);
   int row_pos = 0;
@@ -2807,19 +2893,24 @@ private void vwm_frame_on_resize (vwm_frame *this, int rows, int cols) {
   this->colors = colors;
 }
 
-private void vwm_make_separator (vt_string *render, char *color, int cells, int row, int col) {
+private void vwm_make_separator (string_t *render, char *color, int cells, int row, int col) {
   vt_goto (render, row, col);
-  VtString.append (render, color);
+  string_append (render, color);
   for (int i = 0; i < cells; i++)
-    VtString.append_with_len (render, "—", 3);
+    string_append_with_len (render, "—", 3);
 
   vt_attr_reset (render);
 }
 
-private int vwm_win_set_separators (vwm_win *this, int draw) {
-  ifnot (this->num_separators) return NOTOK;
+private vwm_frame *win_set_current_at (vwm_win *this, int idx) {
+  DListSetCurrent (this, idx);
+  return this->current;
+}
 
-  VtString.clear (this->separators_buf);
+private int win_set_separators (vwm_win *this, int draw) {
+  string_clear (this->separators_buf);
+
+  ifnot (this->num_separators) return NOTOK;
 
   vwm_frame *frame = this->head->next;
   for (int i = 0; i < this->num_separators; i++) {
@@ -2836,7 +2927,7 @@ private int vwm_win_set_separators (vwm_win *this, int draw) {
   return OK;
 }
 
-private void vwm_win_draw (vwm_win *this) {
+private void win_draw (vwm_win *this) {
   char buf[8];
 
   int
@@ -2848,9 +2939,9 @@ private void vwm_win_draw (vwm_win *this) {
   uchar on = NORMAL;
   utf8 chr = 0;
 
-  vt_string *render = this->render;
-  VtString.clear (render);
-  VtString.append (render, TERM_SCREEN_CLEAR);
+  string_t *render = this->render;
+  string_clear (render);
+  string_append (render, TERM_SCREEN_CLEAR);
   vt_setscroll (render, 0, 0);
   vt_attr_reset (render);
   vt_setbg (render, COLOR_BG_NORM);
@@ -2876,9 +2967,9 @@ private void vwm_win_draw (vwm_win *this) {
 
           if (oldattr >= 0x80) {
             ustring_character (chr, buf, &len);
-            VtString.append_with_len (render, buf, len);
+            string_append_with_len (render, buf, len);
           } else
-            VtString.append_byte (render, chr & 0xFF);
+            string_append_byte (render, chr & 0xFF);
         } else {
           oldattr = 0;
 
@@ -2887,15 +2978,15 @@ private void vwm_win_draw (vwm_win *this) {
             on = NORMAL;
           }
 
-          VtString.append_byte (render, ' ');
+          string_append_byte (render, ' ');
         }
       }
 
-      VtString.append (render, "\r\n");
+      string_append (render, "\r\n");
     }
 
     // clear the last newline, otherwise it scrolls one line more
-    VtString.clear_at (render, -1); // this is visible when there is one frame
+    string_clear_at (render, -1); // this is visible when there is one frame
 
     /*  un-needed?
     vt_setscroll (render, frame->scroll_first_row + frame->first_row - 1,
@@ -2906,8 +2997,8 @@ private void vwm_win_draw (vwm_win *this) {
     frame = frame->next;
   }
 
-  vwm_win_set_separators (this, DONOT_DRAW);
-  VtString.append_with_len (render, this->separators_buf->bytes, this->separators_buf->num_bytes);
+  self(set.separators, DONOT_DRAW);
+  string_append_with_len (render, this->separators_buf->bytes, this->separators_buf->num_bytes);
 
   frame = this->current;
   vt_goto (render, frame->row_pos + frame->first_row - 1, frame->col_pos);
@@ -2915,11 +3006,11 @@ private void vwm_win_draw (vwm_win *this) {
   vt_write (render->bytes, stdout);
 }
 
-private void vwm_win_on_resize (vwm_win *win, int draw) {
+private void win_on_resize (vwm_win *this, int draw) {
   int frow = 1;
-  vwm_frame *it = win->head;
+  vwm_frame *it = this->head;
   while (it) {
-    vwm_frame_on_resize (it, it->new_rows, it->num_cols);
+    Vframe.on_resize (it, it->new_rows, it->num_cols);
     it->num_rows = it->new_rows;
     it->last_row = it->num_rows;
     it->first_row = frow;
@@ -2934,18 +3025,18 @@ private void vwm_win_on_resize (vwm_win *win, int draw) {
   }
 
   if (draw)
-    vwm_win_draw (win);
+    self(draw);
 }
 
-private int vwm_win_min_rows (vwm_win *win) {
-  return win->num_rows - (win->length - win->num_separators - (win->length * 2));
+private int win_min_rows (vwm_win *this) {
+  return this->num_rows - (this->length - this->num_separators - (this->length * 2));
 }
 
-private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
-  if (win->length is 1)
+private void win_frame_increase_size (vwm_win *this, vwm_frame *frame, int param, int draw) {
+  if (this->length is 1)
     return;
 
-  int min_rows = vwm_win_min_rows (win);
+  int min_rows = win_min_rows (this);
 
   ifnot (param) param = 1;
   if (param > min_rows) param = min_rows;
@@ -2953,28 +3044,28 @@ private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int pa
   int num_lines;
   int mod;
 
-  if (param is 1 or param is win->length - 1) {
+  if (param is 1 or param is this->length - 1) {
     num_lines = 1;
     mod = 0;
-  } else if (param > win->length - 1) {
-    num_lines = param / (win->length - 1);
-    mod = param % (win->length - 1);
+  } else if (param > this->length - 1) {
+    num_lines = param / (this->length - 1);
+    mod = param % (this->length - 1);
   } else {
-    num_lines = (win->length - 1) / param;
-    mod = (win->length - 1) % param;
+    num_lines = (this->length - 1) / param;
+    mod = (this->length - 1) % param;
   }
 
   int orig_param = param;
 
-  vwm_frame *fr = win->head;
+  vwm_frame *fr = this->head;
   while (fr) {
     fr->new_rows = fr->num_rows;
     fr = fr->next;
   }
 
-  fr = win->head;
+  fr = this->head;
   int iter = 1;
-  while (fr and param and iter++ < ((win->length - 1) * 3)) {
+  while (fr and param and iter++ < ((this->length - 1) * 3)) {
     if (frame is fr)
       goto next_frame;
 
@@ -2995,17 +3086,18 @@ private void vwm_win_frame_increase_size (vwm_win *win, vwm_frame *frame, int pa
 
     next_frame:
       if (fr->next is NULL)
-        fr = win->head;
+        fr = this->head;
       else
         fr = fr->next;
   }
 
   frame->new_rows = frame->new_rows + (orig_param - param);
-  vwm_win_on_resize (win, draw);
+
+  self(on_resize, draw);
 }
 
-private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
-  if (1 is win->length or frame->num_rows <= MIN_ROWS)
+private void win_frame_decrease_size (vwm_win *this, vwm_frame *frame, int param, int draw) {
+  if (1 is this->length or frame->num_rows <= MIN_ROWS)
     return;
 
   if (frame->num_rows - param <= 2)
@@ -3016,18 +3108,18 @@ private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int pa
 
   int num_lines;
   int mod;
-  if (param is 1 or param is win->length - 1) {
+  if (param is 1 or param is this->length - 1) {
     num_lines = 1;
     mod = 0;
-  } else if (param > win->length - 1) {
-    num_lines = param / (win->length - 1);
-    mod = param % (win->length - 1);
+  } else if (param > this->length - 1) {
+    num_lines = param / (this->length - 1);
+    mod = param % (this->length - 1);
   } else {
-    num_lines = (win->length - 1) / param;
-    mod = (win->length - 1) % param;
+    num_lines = (this->length - 1) / param;
+    mod = (this->length - 1) % param;
   }
 
-  vwm_frame *fr = win->head;
+  vwm_frame *fr = this->head;
   while (fr) {
     fr->new_rows = fr->num_rows;
     fr = fr->next;
@@ -3035,9 +3127,9 @@ private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int pa
 
   int orig_param = param;
 
-  fr = win->head;
+  fr = this->head;
   int iter = 1;
-  while (fr and param and iter++ < ((win->length - 1) * 3)) {
+  while (fr and param and iter++ < ((this->length - 1) * 3)) {
     if (frame is fr)
       goto next_frame;
 
@@ -3053,26 +3145,27 @@ private void vwm_win_frame_decrease_size (vwm_win *win, vwm_frame *frame, int pa
 
   next_frame:
     if (fr->next is NULL)
-      fr = win->head;
+      fr = this->head;
     else
       fr = fr->next;
   }
 
   frame->new_rows = frame->new_rows - (orig_param - param);
-  vwm_win_on_resize (win, draw);
+
+  self(on_resize, draw);
 }
 
-private void vwm_win_frame_set_size (vwm_win *win, vwm_frame *frame, int param, int draw) {
+private void win_frame_set_size (vwm_win *this, vwm_frame *frame, int param, int draw) {
   if (param is frame->num_rows or 0 >= param)
     return;
 
   if (param > frame->num_rows)
-    vwm_win_frame_increase_size (win, frame, param - frame->num_rows, draw);
+    win_frame_increase_size (this, frame, param - frame->num_rows, draw);
   else
-    vwm_win_frame_decrease_size (win, frame, frame->num_rows - param, draw);
+    win_frame_decrease_size (this, frame, frame->num_rows - param, draw);
 }
 
-private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int draw) {
+private void win_frame_change (vwm_win *this, vwm_frame *frame, int dir, int draw) {
   if (NULL is frame->next and NULL is frame->prev)
     return;
 
@@ -3080,24 +3173,26 @@ private void vwm_win_frame_change (vwm_win *win, vwm_frame *frame, int dir, int 
 
   if (dir is DOWN_POS) {
     ifnot (NULL is frame->next)
-      idx = DListGetIdx (win, vwm_frame, frame->next);
+      idx = self(get.frame_idx, frame->next);
     else
       idx = 0;
   } else {
     ifnot (NULL is frame->prev)
-      idx = DListGetIdx (win, vwm_frame, frame->prev);
+      idx = self(get.frame_idx, frame->prev);
     else
-      idx = win->length - 1;
+      idx = this->length - 1;
   }
 
-  win->last_frame = frame;
-  DListSetCurrent (win, idx);
-  if (OK is vwm_win_set_separators (win, draw))
+  this->last_frame = frame;
+
+  self(set.current_at, idx);
+
+  if (OK is self(set.separators, draw))
     if (draw is DONOT_DRAW)
-      win->draw_separators = 1;
+      this->draw_separators = 1;
 }
 
-private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
+private void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
   if ($my(length) is 1)
     return;
 
@@ -3107,19 +3202,19 @@ private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
       if ($my(last_win) is win)
         return;
 
-      idx = DListGetIdx ($myprop, vwm_win, $my(last_win));
+      idx = self(get.win_idx, $my(last_win));
       break;
 
     case NEXT_POS:
       ifnot (NULL is win->next)
-        idx = DListGetIdx ($myprop, vwm_win, win->next);
+        idx = self(get.win_idx, win->next);
       else
         idx = 0;
       break;
 
     case PREV_POS:
       ifnot (NULL is win->prev)
-        idx = DListGetIdx ($myprop, vwm_win, win->prev);
+        idx = self(get.win_idx, win->prev);
       else
         idx = $my(length) - 1;
       break;
@@ -3129,22 +3224,26 @@ private void vwm_win_change (vwm_t *this, vwm_win *win, int dir, int draw) {
   }
 
   $my(last_win) = win;
-  DListSetCurrent ($myprop, idx);
-  my.term.screen.clear ($my(term));
-  win = $my(current);
+
+  win = self(set.current_at, idx);
+
+  Vterm.screen.clear ($my(term));
 
   if (draw) {
     if (win->is_initialized)
-      my.win.draw (win);
+      Vwin.draw (win);
     else
-      vwm_win_set_separators (win, DRAW);
+      Vwin.set.separators (win, DRAW);
   } else
-    vwm_win_set_separators (win, DONOT_DRAW);
+    Vwin.set.separators (win, DONOT_DRAW);
 }
 
-private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame) {
+private int frame_edit_log (vwm_frame *frame) {
   if (frame->logfile is NULL)
     return NOTOK;
+
+  vwm_win *win = frame->parent;
+  vwm_t *this = win->parent;
 
   char *argv[] = {$my(editor)->bytes, frame->logfile, NULL};
   int len;
@@ -3156,9 +3255,10 @@ private int vwm_win_frame_edit_log (vwm_t *this, vwm_win *win, vwm_frame *frame)
     write (frame->logfd, buf, len);
   }
 
-  vwm_spawn (this, argv);
+  self(spawn, argv);
+
   vt_video_add_log_lines (frame);
-  my.win.draw (win);
+  Vwin.draw (win);
   return OK;
 }
 
@@ -3172,21 +3272,29 @@ private char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
   return name;
 }
 
-private vwm_frame *vwm_win_get_frame_at (vwm_win *this, int idx) {
+private vwm_frame *win_get_frame_at (vwm_win *this, int idx) {
   return DListGetAt (this, vwm_frame, idx);
 }
 
-private int vwm_win_frame_rows (vwm_win *this, int num_frames, int *frame_rows) {
-  int avail_rows = this->num_rows - this->num_separators;
-  *frame_rows = avail_rows / num_frames;
-  return avail_rows % num_frames;
+private int win_get_frame_idx (vwm_win *this, vwm_frame *frame) {
+  int idx = DListGetIdx (this, vwm_frame, frame);
+  if (idx is INDEX_ERROR)
+    return NOTOK;
+
+  return idx;
 }
 
-private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
+private int vwm_append_win (vwm_t *this, vwm_win *win) {
+  return DListAppend ($myprop, win);
+}
+
+private vwm_win *vwm_new_win (vwm_t *this, char *name, win_opts opts) {
   vwm_win *win = Alloc (sizeof (vwm_win));
-  DListAppend ($myprop, win);
+  self(append_win, win);
 
   win->parent = this;
+  win->self = this->win;
+  win->frame = this->frame;
 
   if (NULL is name)
     win->name = vwm_name_gen (&$my(name_gen), "win:", 4);
@@ -3208,8 +3316,8 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
     win->num_rows = $my(num_rows);
 
   win->num_separators = num_frames - 1;
-  win->separators_buf = VtString.new ((win->num_rows * win->num_cols) + 32);
-  win->render = VtString.new (4096);
+  win->separators_buf = string_new ((win->num_rows * win->num_cols) + 32);
+  win->render = string_new (4096);
   win->last_row = win->num_rows;
 
   if (win->first_col <= 0) win->first_col = 1;
@@ -3225,14 +3333,14 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
   win->head = win->current = win->tail = NULL;
 
   int frame_rows = 0;
-  int mod = my.win.frame_rows (win, num_frames, &frame_rows);
+  int mod = Vwin.frame_rows (win, num_frames, &frame_rows);
 
   int
     num_rows = frame_rows + mod,
     first_row = win->first_row;
 
   for (int i = 0; i < num_frames; i++) {
-    my.frame.new (win, num_rows, first_row);
+    Vwin.new_frame (win, num_rows, first_row);
     first_row += num_rows + 1;
     num_rows = frame_rows;
   }
@@ -3240,40 +3348,33 @@ private vwm_win *vwm_win_new (vwm_t *this, char *name, win_opts opts) {
   win->last_frame = win->head;
 
   if (opts.focus)
-    DListSetCurrent ($myprop, $my(length) - 1);
+    win = self(set.current_at, $my(length) - 1);
 
   return win;
 }
 
-private void vwm_win_release (vwm_t *this, vwm_win *win) {
-  int idx = DListGetIdx ($myprop, vwm_win, win);
-  if (idx is INDEX_ERROR) return;
-  vwm_win *w = DListPopAt ($myprop, vwm_win, idx);
+private void vwm_release_win (vwm_t *this, vwm_win *win) {
+  int idx = self(get.win_idx, win);
+  if (idx is NOTOK) return;
+
+  vwm_win *w = self(pop_win_at, idx);
+
   int len = w->length;
   for (int i = 0; i < len; i++)
-    my.frame.release (w, 0);
+    Vwin.release_frame_at (w, 0);
 
-  VtString.release (win->separators_buf);
-  VtString.release (win->render);
+  string_release (win->separators_buf);
+  string_release (win->render);
 
   free (w->name);
   free (w);
-}
-
-private void fd_set_size (int fd, int rows, int cols) {
-  struct winsize wsiz;
-  wsiz.ws_row = rows;
-  wsiz.ws_col = cols;
-  wsiz.ws_xpixel = 0;
-  wsiz.ws_ypixel = 0;
-  ioctl (fd, TIOCSWINSZ, &wsiz);
 }
 
 private int vwm_spawn (vwm_t *this, char **argv) {
   int status = NOTOK;
   pid_t pid;
 
-  my.term.orig_mode ($my(term));
+  Vterm.orig_mode ($my(term));
 
   if (-1 is (pid = fork ())) goto theend;
 
@@ -3306,13 +3407,15 @@ private int vwm_spawn (vwm_t *this, char **argv) {
     fprintf (stderr, "Proc %s terminated with exit status: %d", argv[0], status);
 
 theend:
-  my.term.raw_mode ($my(term));
+  Vterm.raw_mode ($my(term));
   return status;
 }
 
-private pid_t vwm_frame_fork (vwm_t *this, vwm_frame *frame) {
+private pid_t frame_fork (vwm_frame *frame) {
   if (frame->pid isnot -1)
     return frame->pid;
+
+  vwm_t *this = frame->parent->parent;
 
   signal (SIGWINCH, SIG_IGN);
 
@@ -3323,7 +3426,7 @@ private pid_t vwm_frame_fork (vwm_t *this, vwm_frame *frame) {
   if (-1 is grantpt (fd)) goto theerror;
   if (-1 is unlockpt (fd)) goto theerror;
   char *name = ptsname (fd); ifnull (name) goto theerror;
-  strncpy (frame->tty_name, name, MAX_TTYNAME - 1);
+  cstring_cp (frame->tty_name, MAX_TTYNAME, name, MAX_TTYNAME - 1);
   if (-1 is (frame->pid = fork ())) goto theerror;
 
   ifnot (frame->pid) {
@@ -3393,8 +3496,8 @@ private void vwm_sigwinch_handler (int sig) {
 
 private void vwm_handle_sigwinch (vwm_t *this) {
   int rows; int cols;
-  my.term.init_size ($my(term), &rows, &cols);
-  my.set.size (this, rows, cols, 1);
+  Vterm.init_size ($my(term), &rows, &cols);
+  self(set.size, rows, cols, 1);
 
   vwm_win *win = $my(head);
   while (win) {
@@ -3403,7 +3506,7 @@ private void vwm_handle_sigwinch (vwm_t *this) {
     win->last_row = win->num_rows;
 
     int frame_rows = 0;
-    int mod = my.win.frame_rows (win, win->length, &frame_rows);
+    int mod = Vwin.frame_rows (win, win->length, &frame_rows);
 
     int
       num_rows = frame_rows + mod,
@@ -3411,7 +3514,7 @@ private void vwm_handle_sigwinch (vwm_t *this) {
 
     vwm_frame *frame = win->head;
     while (frame) {
-      vwm_frame_on_resize (frame, num_rows, win->num_cols);
+      Vframe.on_resize (frame, num_rows, win->num_cols);
       frame->first_row = first_row;
       frame->num_rows = num_rows;
       frame->last_row = frame->num_rows;
@@ -3430,7 +3533,7 @@ private void vwm_handle_sigwinch (vwm_t *this) {
 
   win = $my(current);
 
-  my.win.draw (win);
+  Vwin.draw (win);
   $my(need_resize) = 0;
 }
 
@@ -3441,8 +3544,17 @@ private void vwm_exit_signal (int sig) {
 
 private int vwm_main (vwm_t *this) {
   ifnot ($my(length)) return OK;
-  if (NULL is $my(current))
+  if (NULL is $my(current)) {
     $my(current) = $my(head);
+    $my(cur_idx) = 0;
+  }
+
+  if ($my(length) > 1) {
+    if (NULL isnot $my(current)->prev)
+      $my(last_win) = $my(current)->prev;
+    else
+      $my(last_win) = $my(current)->next;
+  }
 
   setbuf (stdin, NULL);
 
@@ -3469,12 +3581,12 @@ private int vwm_main (vwm_t *this) {
 
   vwm_win *win = $my(current);
 
-  vwm_win_set_separators (win, DRAW);
+  Vwin.set.separators (win, DRAW);
 
   vwm_frame *frame = win->head;
   while (frame) {
     if (frame->argv isnot NULL and frame->pid is -1)
-      my.frame.fork (this, frame);
+      Vframe.fork (frame);
 
     frame = frame->next;
   }
@@ -3486,18 +3598,19 @@ private int vwm_main (vwm_t *this) {
       break;
     }
 
+check_length:
     ifnot (win->length) {
       if (1 isnot $my(length))
-        my.win.change (this, win, PREV_POS, DRAW);
+        self(change_win, win, PREV_POS, DRAW);
 
-      my.win.release (this, win);
+      self(release_win, win);
       continue;
     }
 
     if ($my(need_resize))
       vwm_handle_sigwinch (this);
 
-    my.win.set.frame (win, win->current);
+    Vwin.set.frame (win, win->current);
 
     maxfd = 1;
 
@@ -3506,8 +3619,14 @@ private int vwm_main (vwm_t *this) {
 
     frame = win->head;
     while (frame) {
-      if (frame->pid isnot -1)
-        vwm_frame_check_pid (frame);
+      if (frame->pid isnot -1) {
+        if (0 is Vframe.check_pid (frame)) {
+          vwm_frame *tmp = frame->next;
+          Vwin.delete_frame (win, frame, DRAW);
+          frame = tmp;
+          continue;
+        }
+      }
 
       if (frame->fd isnot -1) {
         FD_SET (frame->fd, &read_mask);
@@ -3517,6 +3636,8 @@ private int vwm_main (vwm_t *this) {
 
       frame = frame->next;
     }
+
+    if (win->length is 0) goto check_length;
 
     if (0 >= (numready = select (maxfd, &read_mask, NULL, NULL, tv))) {
       switch (errno) {
@@ -3535,7 +3656,7 @@ private int vwm_main (vwm_t *this) {
 
     if (FD_ISSET (STDIN_FILENO, &read_mask)) {
       if (0 < fd_read (STDIN_FILENO, input_buf, 1))
-        if (VWM_QUIT is my.process_input (this, win, frame, input_buf)) {
+        if (VWM_QUIT is self(process_input, win, frame, input_buf)) {
           retval = OK;
           break;
         }
@@ -3554,17 +3675,22 @@ private int vwm_main (vwm_t *this) {
           switch (errno) {
             case EIO:
             default:
-              if (-1 isnot frame->pid)
-                vwm_frame_check_pid (frame);
+              if (-1 isnot frame->pid) {
+                if (0 is Vframe.check_pid (frame)) {
+                  Vwin.delete_frame (win, frame, DRAW);
+                  goto check_length;
+                }
+              }
+
               goto next_frame;
           }
         }
 
         output_buf[output_len] = '\0';
 
-        my.win.set.frame (win, frame);
+        Vwin.set.frame (win, frame);
 
-        my.process_output (frame, output_buf, output_len);
+        frame->process_output (frame, output_buf, output_len);
       }
 
       next_frame:
@@ -3603,7 +3729,7 @@ private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char
   utf8 c;
 
 getc_again:
-  c = my.getkey (STDIN_FILENO);
+  c = self(getkey, STDIN_FILENO);
 
   if (-1 is c) return OK;
 
@@ -3640,15 +3766,15 @@ getc_again:
 
       if (c is '!') {
         char *argv[] = {$my(shell)->bytes, NULL};
-        my.frame.set.argv (frame, 1, argv);
+        Vframe.set.argv (frame, 1, argv);
       } else {
         if (NULL is frame->argv) {
           char *argv[] = {DEFAULT_APP, NULL};
-          my.frame.set.argv (frame, 1, argv);
+          Vframe.set.argv (frame, 1, argv);
         }
       }
 
-      my.frame.fork (this, frame);
+      Vframe.fork (frame);
       break;
 
     case 'n':
@@ -3658,33 +3784,33 @@ getc_again:
         if (param > MAX_FRAMES)
           param = MAX_FRAMES;
 
-      my.win.new (this, NULL, WinNewOpts (
+      self(new.win, NULL, WinNewOpts (
           .rows = $my(num_rows),
           .cols = $my(num_cols),
           .num_frames = param,
           .max_frames = MAX_FRAMES));
 
       $my(last_win) = win;
-      DListSetCurrent ($myprop, $my(length) - 1);
-      win = $my(current);
-      my.win.draw (win);
+      win = self(set.current_at, $my(length) - 1);
+      Vwin.draw (win);
 
       break;
 
     case 'k':
-      vwm_frame_kill_proc (frame);
+      if (0 is Vframe.kill_proc (frame))
+        Vwin.delete_frame (win, frame, DRAW);
       break;
 
     case 'd':
-      my.win.delete_frame (this, win, frame, DRAW);
+      Vwin.delete_frame (win, frame, DRAW);
       break;
 
     case 's':
-      my.win.add_frame (this, win, 0, NULL, DRAW);
+      Vwin.add_frame (win, 0, NULL, DRAW);
       break;
 
     case 'S': {
-        utf8 w = my.getkey (STDIN_FILENO);
+        utf8 w = self(getkey, STDIN_FILENO);
         char *argv[] = {NULL, NULL};
         int argc = 1;
 
@@ -3704,7 +3830,7 @@ getc_again:
           default:
             break;
         }
-        my.win.add_frame (this, win, argc, argv, DRAW);
+        Vwin.add_frame (win, argc, argv, DRAW);
       }
 
       break;
@@ -3712,32 +3838,32 @@ getc_again:
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
-      my.win.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DONOT_DRAW);
+      Vwin.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DONOT_DRAW);
       break;
 
     case ARROW_LEFT_KEY:
     case ARROW_RIGHT_KEY:
     case '`':
-      my.win.change (this, win,
+      self(change_win, win,
           (c is ARROW_RIGHT_KEY) ? NEXT_POS :
           (c is '`') ? LAST_POS : PREV_POS, DRAW);
       break;
 
     case PAGE_UP_KEY:
     case 'E':
-      my.win.frame.edit_log (this, win, frame);
+      Vframe.edit_log (frame);
       break;
 
     case '+':
-      my.win.frame.increase_size (win, frame, param, DRAW);
+      Vwin.frame.increase_size (win, frame, param, DRAW);
       break;
 
     case '-':
-      my.win.frame.decrease_size (win, frame, param, DRAW);
+      Vwin.frame.decrease_size (win, frame, param, DRAW);
       break;
 
     case '=':
-      my.win.frame.set_size (win, frame, param, DRAW);
+      Vwin.frame.set_size (win, frame, param, DRAW);
       break;
 
     case '0':
@@ -3777,7 +3903,6 @@ mutable public void __alloc_error_handler__ (int err, size_t size,
 
 public vwm_t *__init_vwm__ (void) {
   AllocErrorHandler = __alloc_error_handler__;
-  VtString = __init_vt_string__ ();
 
   vwm_t *this = Alloc (sizeof (vwm_t));
   vwm_prop *prop = Alloc (sizeof (vwm_prop));
@@ -3785,67 +3910,20 @@ public vwm_t *__init_vwm__ (void) {
   *this =  (vwm_t) {
     .self = (vwm_self) {
       .main = vwm_main,
+      .spawn = vwm_spawn,
+      .getkey = vwm_getkey,
+      .pop_win_at = vwm_pop_win_at,
+      .change_win = vwm_change_win,
+      .append_win = vwm_append_win,
+      .release_win = vwm_release_win,
       .process_input = vwm_process_input,
-      .process_output = vt_process_output,
-      .getkey = getkey,
-      .term = (vwm_term_self) {
-        .new = vwm_term_new,
-        .release = vwm_term_release,
-        .raw_mode =  vwm_term_raw_mode,
-        .sane_mode = vwm_term_sane_mode,
-        .orig_mode = vwm_term_orig_mode,
-        .init_size = vwm_term_init_size,
-        .screen = (vwm_term_screen_self) {
-          .save = vwm_term_screen_save,
-          .clear = vwm_term_screen_clear,
-          .restore = vwm_term_screen_restore
-         }
-      },
-      .win = (vwm_win_self) {
-        .new = vwm_win_new,
-        .draw = vwm_win_draw,
-        .change = vwm_win_change,
-        .release = vwm_win_release,
-        .add_frame = vwm_win_add_frame,
-        .frame_rows = vwm_win_frame_rows,
-        .delete_frame = vwm_win_delete_frame,
-        .set = (vwm_win_set_self) {
-          .frame = vwm_win_set_frame
-        },
-        .get = (vwm_win_get_self) {
-          .frame_at = vwm_win_get_frame_at
-        },
-        .frame = (vwm_win_frame_self) {
-          .change = vwm_win_frame_change,
-          .edit_log = vwm_win_frame_edit_log,
-          .set_size = vwm_win_frame_set_size,
-          .increase_size = vwm_win_frame_increase_size,
-          .decrease_size = vwm_win_frame_decrease_size
-        }
-      },
-      .frame = (vwm_frame_self) {
-        .new = vwm_win_frame_new,
-        .fork = vwm_frame_fork,
-        .release = vwm_win_frame_release,
-        .kill_proc = vwm_frame_kill_proc,
-        .get = (vwm_frame_get_self) {
-          .fd = vwm_frame_get_fd,
-          .pid = vwm_frame_get_pid
-        },
-        .set = (vwm_frame_set_self) {
-          .fd = vwm_frame_set_fd,
-          .log = vwm_frame_set_log,
-          .argv = vwm_frame_set_argv,
-          .command = vwm_frame_set_command,
-          .unimplemented = vwm_frame_set_unimplemented
-        }
-      },
       .get = (vwm_get_self) {
         .term = vwm_get_term,
         .shell = vwm_get_shell,
         .state = vwm_get_state,
         .lines = vwm_get_lines,
         .editor = vwm_get_editor,
+        .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
         .current_win = vwm_get_current_win,
         .current_frame = vwm_get_current_frame
@@ -3856,27 +3934,92 @@ public vwm_t *__init_vwm__ (void) {
         .shell =  vwm_set_shell,
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
+        .current_at = vwm_set_current_at,
         .user_object = vwm_set_user_object,
         .rline_callback =  vwm_set_rline_callback,
         .on_tab_callback = vwm_set_on_tab_callback
+      },
+      .new = (vwm_new_self) {
+        .win = vwm_new_win,
+        .term = vwm_new_term
+      }
+    },
+    .term = (vwm_term_self) {
+      .release = term_release,
+      .raw_mode =  term_raw_mode,
+      .sane_mode = term_sane_mode,
+      .orig_mode = term_orig_mode,
+      .init_size = term_init_size,
+      .screen = (vwm_term_screen_self) {
+        .save = term_screen_save,
+        .clear = term_screen_clear,
+        .restore = term_screen_restore
+       }
+    },
+    .win = (vwm_win_self) {
+      .draw = win_draw,
+      .on_resize = win_on_resize,
+      .new_frame = win_new_frame,
+      .add_frame = win_add_frame,
+      .frame_rows = win_frame_rows,
+      .append_frame = win_append_frame,
+      .delete_frame = win_delete_frame,
+      .pop_frame_at = win_pop_frame_at,
+      .release_frame_at = win_release_frame_at,
+      .set = (vwm_win_set_self) {
+        .frame = win_set_frame,
+        .current_at = win_set_current_at,
+        .separators = win_set_separators
+      },
+      .get = (vwm_win_get_self) {
+        .frame_idx = win_get_frame_idx,
+        .frame_at = win_get_frame_at
+      },
+      .frame = (vwm_win_frame_self) {
+        .change = win_frame_change,
+        .set_size = win_frame_set_size,
+        .increase_size = win_frame_increase_size,
+        .decrease_size = win_frame_decrease_size
+      }
+    },
+    .frame = (vwm_frame_self) {
+      .fork = frame_fork,
+      .clear = frame_clear,
+      .edit_log = frame_edit_log,
+      .check_pid = frame_check_pid,
+      .on_resize = frame_on_resize,
+      .kill_proc = frame_kill_proc,
+      .release_argv = frame_release_argv,
+      .process_output = frame_process_output,
+      .get = (vwm_frame_get_self) {
+        .fd = frame_get_fd,
+        .pid = frame_get_pid
+      },
+      .set = (vwm_frame_set_self) {
+        .fd = frame_set_fd,
+        .log = frame_set_log,
+        .argv = frame_set_argv,
+        .command = frame_set_command,
+        .unimplemented = frame_set_unimplemented,
+        .process_output = frame_set_process_output
       }
     },
     .prop = prop
   };
 
   $my(tmpdir) = NULL;
-  $my(editor) = VtString.new_with (EDITOR);
-  $my(shell) = VtString.new_with (SHELL);
-  $my(term) = my.term.new ();
+  $my(editor) = string_new_with (EDITOR);
+  $my(shell) = string_new_with (SHELL);
   $my(length) = 0;
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
   $my(user_object) = NULL;
 
-  my.set.rline_callback  (this, vwm_default_rline_callback);
-  my.set.on_tab_callback (this, vwm_default_on_tab_callback);
-  my.set.tmpdir (this, NULL, 0);
+  self(new.term);
+  self(set.rline_callback, vwm_default_rline_callback);
+  self(set.on_tab_callback, vwm_default_on_tab_callback);
+  self(set.tmpdir, NULL, 0);
 
   VWM = this;
   return this;
@@ -3886,20 +4029,20 @@ public void __deinit_vwm__ (vwm_t **thisp) {
   if (NULL == *thisp) return;
   vwm_t *this = *thisp;
 
-  my.term.orig_mode ($my(term));
-  my.term.release (&$my(term));
+  Vterm.orig_mode ($my(term));
+  Vterm.release (&$my(term));
 
   vwm_win *win = $my(head);
   while (win) {
     vwm_win *tmp = win->next;
-    my.win.release (this, win);
+    self(release_win, win);
     win = tmp;
   }
 
   free ($my(tmpdir));
 
-  VtString.release ($my(editor));
-  VtString.release ($my(shell));
+  string_release ($my(editor));
+  string_release ($my(shell));
 
   free (this->prop);
   free (this);

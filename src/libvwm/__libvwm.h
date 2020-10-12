@@ -38,9 +38,17 @@
 #define $my(__p__) this->prop->__p__
 #endif
 
-#ifndef my
-#define my this->self
+#ifdef self
+#undef self
 #endif
+
+#ifndef self
+#define self(__f__, ...) this->self.__f__ (this, ##__VA_ARGS__)
+#endif
+
+#define Vframe this->frame
+#define Vwin this->win
+#define Vterm this->term
 
 #ifndef $myprop
 #define $myprop this->prop
@@ -53,12 +61,6 @@
 
 #define INDEX_ERROR            -1000
 #define INTEGEROVERFLOW_ERROR  -1002
-
-#ifdef self
-#undef self
-#endif
-
-#define self(__f__, ...) this->self.__f__ (this, ## __VA_ARGS__)
 
 typedef void (*AllocErrorHandlerF) (int, size_t, char *, const char *, int);
 
@@ -329,7 +331,3 @@ do {                                                                \
     fclose (fp_);                                         \
   }                                                       \
 })
-
-
-private int vwm_spawn (vwm_t *, char **);
-private void vwm_win_on_resize (vwm_win *, int);

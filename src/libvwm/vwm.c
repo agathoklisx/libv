@@ -35,7 +35,11 @@
 #include <libvwm.h>
 
 static vwm_t *VWM;
-#define Vwm VWM->self
+
+#define Vwm    VWM->self
+#define Vframe VWM->frame
+#define Vwin   VWM->win
+#define Vterm  VWM->term
 
 int main (int argc, char **argv) {
   vwm_t *this = __init_vwm__ ();
@@ -43,46 +47,46 @@ int main (int argc, char **argv) {
 
   vwm_term *term =  Vwm.get.term (this);
 
-  Vwm.term.raw_mode (term);
+  Vterm.raw_mode (term);
 
   int rows, cols;
-  Vwm.term.init_size (term, &rows, &cols);
+  Vterm.init_size (term, &rows, &cols);
 
   Vwm.set.size (this, rows, cols, 1);
 
-  vwm_win *win = Vwm.win.new (this, "v", WinNewOpts (
+  vwm_win *win = Vwm.new.win (this, "v", WinNewOpts (
     .rows = rows,
     .cols = cols,
     .num_frames = 2,
     .max_frames = 3));
 
-  vwm_frame *frame = Vwm.win.get.frame_at (win, 0);
-  Vwm.frame.set.argv (frame, argc-1, argv + 1);
-  Vwm.frame.set.log (frame, NULL, 1);
+  vwm_frame *frame = Vwin.get.frame_at (win, 0);
+  Vframe.set.argv (frame, argc-1, argv + 1);
+  Vframe.set.log (frame, NULL, 1);
 
   char *largv[] = {"bash", NULL};
-  frame = Vwm.win.get.frame_at (win, 1);
-  Vwm.frame.set.argv (frame, 1, largv);
-  Vwm.frame.set.log (frame, NULL, 1);
+  frame = Vwin.get.frame_at (win, 1);
+  Vframe.set.argv (frame, 1, largv);
+  Vframe.set.log (frame, NULL, 1);
 
-  win = Vwm.win.new (this, NULL, WinNewOpts (
+  win = Vwm.new.win (this, NULL, WinNewOpts (
     .rows =rows,
     .cols = cols,
     .num_frames = 1,
     .max_frames = 3));
 
   char *llargv[] = {"zsh", NULL};
-  frame = Vwm.win.get.frame_at (win, 0);
-  Vwm.frame.set.argv (frame, 1, llargv);
-  Vwm.frame.set.log (frame, NULL, 1);
-  Vwm.frame.fork (this, frame);
+  frame = Vwin.get.frame_at (win, 0);
+  Vframe.set.argv (frame, 1, llargv);
+  Vframe.set.log (frame, NULL, 1);
+  Vframe.fork (frame);
 
-  Vwm.term.screen.save (term);
-  Vwm.term.screen.clear (term);
+  Vterm.screen.save (term);
+  Vterm.screen.clear (term);
 
   int retval = Vwm.main (this);
 
-  Vwm.term.screen.restore (term);
+  Vterm.screen.restore (term);
 
   __deinit_vwm__ (&this);
 

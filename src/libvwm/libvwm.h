@@ -43,40 +43,16 @@ typedef signed int utf8;
 #define DRAW        1
 #define DONOT_DRAW  0
 
-typedef struct vt_string {
-  size_t
-    mem_size,
-    num_bytes;
-
-  char *bytes;
-} vt_string;
-
-typedef struct VtString_T {
-  void (*release) (vt_string *);
-  vt_string
-    *(*new) (size_t),
-    *(*clear) (vt_string *),
-    *(*clear_at) (vt_string *, int),
-    *(*new_with) (const char *),
-    *(*append) (vt_string *, char *),
-    *(*append_byte) (vt_string *, char),
-    *(*new_with_len) (const char *, size_t),
-    *(*append_with_len) (vt_string *, char *, size_t);
-} VtString_T;
-
-public VtString_T __init_vt_string__ (void);
-
 typedef struct vwm_prop vwm_prop;
 typedef struct vwm_term vwm_term;
 typedef struct vwm_win vwm_win;
 typedef struct vwm_frame vwm_frame;
 typedef struct vwm_t vwm_t;
 
+typedef void (*ProcessOutput) (vwm_frame *, char *, int);
 typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
-typedef int (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
-typedef int (*RLineCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
-
-typedef vt_string *(*ProcessChar) (vwm_frame *, vt_string *, int);
+typedef int  (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
+typedef int  (*RLineCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
 
 typedef struct win_opts {
   int
@@ -101,29 +77,27 @@ typedef struct win_opts {
 
 typedef struct vwm_term_screen_self {
   void
-    (*clear) (vwm_term *),
-    (*save) (vwm_term *),
+    (*clear)   (vwm_term *),
+    (*save)    (vwm_term *),
     (*restore) (vwm_term *);
 } vwm_term_screen_self;
 
-typedef struct vwm_tern_self {
+typedef struct vwm_term_self {
   vwm_term_screen_self screen;
-
-  vwm_term *(*new) (void);
 
   void
     (*init_size) (vwm_term *, int *, int *),
-    (*release) (vwm_term **);
+    (*release)   (vwm_term **);
 
   int
+    (*raw_mode)  (vwm_term *),
     (*orig_mode) (vwm_term *),
-    (*raw_mode) (vwm_term *),
     (*sane_mode) (vwm_term *);
 
 } vwm_term_self;
 
 typedef struct vwm_frame_get_self {
-  int (*fd) (vwm_frame *);
+  int   (*fd)  (vwm_frame *);
   pid_t (*pid) (vwm_frame *);
 } vwm_frame_get_self;
 
@@ -132,7 +106,8 @@ typedef struct vwm_frame_set_self {
     (*fd) (vwm_frame *, int),
     (*argv) (vwm_frame *, int, char **),
     (*command) (vwm_frame *, char *),
-    (*unimplemented) (vwm_frame *, Unimplemented);
+    (*unimplemented) (vwm_frame *, Unimplemented),
+    (*process_output) (vwm_frame *, ProcessOutput);
 
   int (*log) (vwm_frame *, char *,  int);
 } vwm_frame_set_self;
@@ -142,21 +117,32 @@ typedef struct vwm_frame_self {
   vwm_frame_set_self set;
 
   void
-    (*release) (vwm_win *, int),
+    (*clear) (vwm_frame *),
+    (*on_resize) (vwm_frame *, int, int),
+    (*release_argv) (vwm_frame *),
+    (*process_output) (vwm_frame *, char *, int);
+
+  int
+    (*edit_log) (vwm_frame *),
+    (*check_pid) (vwm_frame *),
     (*kill_proc) (vwm_frame *);
 
-  pid_t (*fork) (vwm_t *, vwm_frame *);
-  vwm_frame *(*new) (vwm_win *, int, int);
+  pid_t (*fork) (vwm_frame *);
 } vwm_frame_self;
-
 
 typedef struct vwm_win_set_self {
   void
     (*frame) (vwm_win *, vwm_frame *),
     (*frame_by_idx) (vwm_win *, int);
+
+  int (*separators) (vwm_win *, int);
+
+  vwm_frame *(*current_at) (vwm_win *, int);
 } vwm_win_set_self;
 
 typedef struct vwm_win_get_self {
+  int (*frame_idx) (vwm_win *, vwm_frame *);
+
   vwm_frame
     *(*frame_at) (vwm_win *, int),
     *(*current_frame) (vwm_win *);
@@ -168,8 +154,6 @@ typedef struct vwm_win_frame_self {
     (*set_size)      (vwm_win *, vwm_frame *, int, int),
     (*increase_size) (vwm_win *, vwm_frame *, int, int),
     (*decrease_size) (vwm_win *, vwm_frame *, int, int);
-
-  int (*edit_log) (vwm_t *, vwm_win *, vwm_frame *);
 } vwm_win_frame_self;
 
 typedef struct vwm_win_self {
@@ -179,25 +163,28 @@ typedef struct vwm_win_self {
 
   void
     (*draw) (vwm_win *),
-    (*change) (vwm_t *, vwm_win *, int, int),
-    (*release) (vwm_t *, vwm_win *);
+    (*on_resize) (vwm_win *, int),
+    (*release_frame_at)  (vwm_win *, int);
 
   int
     (*frame_rows) (vwm_win *, int, int *),
-    (*delete_frame) (vwm_t *, vwm_win *, vwm_frame *, int);
+    (*append_frame) (vwm_win *, vwm_frame *),
+    (*delete_frame) (vwm_win *, vwm_frame *, int);
 
-  vwm_frame *(*add_frame) (vwm_t *, vwm_win *, int, char **, int);
-  vwm_win *(*new) (vwm_t *, char *, win_opts);
-
+  vwm_frame
+    *(*new_frame) (vwm_win *, int, int),
+    *(*add_frame) (vwm_win *, int, char **, int),
+    *(*pop_frame_at) (vwm_win *, int);
 } vwm_win_self;
 
 typedef struct vwm_get_self {
   int
     (*state) (vwm_t *),
     (*lines) (vwm_t *),
-    (*columns) (vwm_t *);
+    (*columns) (vwm_t *),
+    (*win_idx) (vwm_t *, vwm_win *);
 
-  vt_string
+  char
     *(*shell) (vwm_t *),
     *(*editor) (vwm_t *);
 
@@ -217,27 +204,40 @@ typedef struct vwm_set_self {
     (*rline_callback) (vwm_t *, RLineCallback),
     (*on_tab_callback) (vwm_t *, OnTabCallback);
 
+  vwm_win *(*current_at) (vwm_t *, int);
+
 } vwm_set_self;
 
+typedef struct vwm_new_self {
+  vwm_win  *(*win) (vwm_t *, char *, win_opts);
+  vwm_term *(*term) (vwm_t *);
+} vwm_new_self;
+
 typedef struct vwm_self {
-   vwm_term_self term;
-   vwm_win_self win;
-   vwm_frame_self frame;
    vwm_get_self get;
    vwm_set_self set;
+   vwm_new_self new;
+
+  void
+    (*change_win) (vwm_t *, vwm_win *, int, int),
+    (*release_win) (vwm_t *, vwm_win *);
 
   int
     (*main) (vwm_t *),
+    (*spawn) (vwm_t *, char **),
+    (*append_win) (vwm_t *, vwm_win *),
     (*process_input) (vwm_t *, vwm_win *, vwm_frame *, char *);
 
-  utf8 (*getkey) (int);
+  utf8 (*getkey) (vwm_t *, int);
 
-  void
-    (*process_output) (vwm_frame *, char *, int);
+  vwm_win *(*pop_win_at) (vwm_t *, int);
 } vwm_self;
 
 struct vwm_t {
   vwm_self self;
+  vwm_win_self win;
+  vwm_frame_self frame;
+  vwm_term_self term;
   vwm_prop *prop;
 };
 

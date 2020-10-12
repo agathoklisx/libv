@@ -24,7 +24,10 @@
 
 static vwm_ex_t *ThisVwm;
 
-#define Vwm ThisVwm->vwm->self
+#define Vwm    ThisVwm->vwm->self
+#define Vwin   ThisVwm->vwm->win
+#define Vframe ThisVwm->vwm->frame
+//#define Vterm  ThisVwm->vwm->term
 
 private void __ed_set_topline_void (ed_t *ed, buf_t *this) {
   (void) ed; (void) this; // There is no way to change
@@ -51,28 +54,28 @@ private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
     goto theend;
 
   } else if (Cstring.eq (com->bytes, "framedelete")) {
-    Vwm.win.delete_frame (ex->vwm,
-        Vwm.get.current_win (ex->vwm), Vwm.get.current_frame (ex->vwm), DRAW);
+    Vwin.delete_frame (Vwm.get.current_win (ex->vwm),
+        Vwm.get.current_frame (ex->vwm), DRAW);
     retval = OK;
     goto theend;
   } else if (Cstring.eq (com->bytes, "split")) {
-    Vwm.win.add_frame (ex->vwm, Vwm.get.current_win (ex->vwm), 0, NULL, DRAW);
+    Vwin.add_frame (Vwm.get.current_win (ex->vwm), 0, NULL, DRAW);
     retval = OK;
     goto theend;
   } else if (Cstring.eq (com->bytes, "fork")) {
     retval = OK;
     vwm_frame *frame = Vwm.get.current_frame (ex->vwm);
-    pid_t pid = Vwm.frame.get.pid (frame);
+    pid_t pid = Vframe.get.pid (frame);
     if (pid > 0) goto theend;
 
     string_t *command = Rline.get.anytype_arg (rl, "command");
     if (NULL is command) {
-      char *argv[] = {Vwm.get.shell (ex->vwm)->bytes, NULL};
-      Vwm.frame.set.argv (frame, 1, argv);
+      char *argv[] = {Vwm.get.shell (ex->vwm), NULL};
+      Vframe.set.argv (frame, 1, argv);
     } else
-      Vwm.frame.set.command (frame, command->bytes);
+      Vframe.set.command (frame, command->bytes);
 
-    Vwm.frame.fork (ex->vwm, frame);
+    Vframe.fork (frame);
     goto theend;
   }
 
@@ -100,7 +103,7 @@ private int tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *obj
 
   int retval = Buf.rline (&ex->buf, rl);
   win = Vwm.get.current_win (this);
-  Vwm.win.draw (win);
+  Vwin.draw (win);
   return retval;
 }
 
@@ -119,7 +122,7 @@ private int rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *o
 
   int retval = Buf.rline (&ex->buf, rl);
   win = Vwm.get.current_win (this);
-  Vwm.win.draw (win);
+  Vwin.draw (win);
   return retval;
 }
 
