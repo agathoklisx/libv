@@ -46,6 +46,10 @@ int main (int argc, char **argv) {
     .max_frames = 3));
 
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
+
+  if (argc > 1)
+    Vframe.set.argv (frame, argc-1, argv + 1);
+
   Vframe.set.argv (frame, argc-1, argv + 1);
   Vframe.set.log (frame, NULL, 1);
 

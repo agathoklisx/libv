@@ -53,6 +53,7 @@ typedef void (*ProcessOutput) (vwm_frame *, char *, int);
 typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
 typedef int  (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*RLineCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
+typedef int  (*EditFileCallback) (vwm_t *, char *, void *);
 
 typedef struct win_opts {
   int
@@ -141,7 +142,9 @@ typedef struct vwm_win_set_self {
 } vwm_win_set_self;
 
 typedef struct vwm_win_get_self {
-  int (*frame_idx) (vwm_win *, vwm_frame *);
+  int
+    (*frame_idx) (vwm_win *, vwm_frame *),
+    (*num_frames) (vwm_win *);
 
   vwm_frame
     *(*frame_at) (vwm_win *, int),
@@ -202,7 +205,8 @@ typedef struct vwm_set_self {
     (*tmpdir) (vwm_t *, char *, size_t),
     (*user_object) (vwm_t *, void *),
     (*rline_callback) (vwm_t *, RLineCallback),
-    (*on_tab_callback) (vwm_t *, OnTabCallback);
+    (*on_tab_callback) (vwm_t *, OnTabCallback),
+    (*edit_file_callback) (vwm_t *, EditFileCallback);
 
   vwm_win *(*current_at) (vwm_t *, int);
 

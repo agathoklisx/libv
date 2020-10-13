@@ -330,8 +330,10 @@ struct vwm_prop {
     length;
 
   void *user_object;
+
   OnTabCallback on_tab_callback;
   RLineCallback rline_callback;
+  EditFileCallback edit_file_callback;
 };
 
 private void vwm_sigwinch_handler (int sig);
@@ -917,6 +919,10 @@ private void vwm_set_rline_callback (vwm_t *this, RLineCallback cb) {
   $my(rline_callback) = cb;
 }
 
+private void vwm_set_edit_file_callback (vwm_t *this, EditFileCallback cb) {
+  $my(edit_file_callback) = cb;
+}
+
 private void vwm_set_shell (vwm_t *this, char *shell) {
   if (NULL is shell) return;
   size_t len = bytelen (shell);
@@ -1210,19 +1216,15 @@ private int vt_video_line_to_str (int *line, char *buf, int len) {
 }
 
 private void vt_video_add_log_lines (vwm_frame *this) {
-  if (-1 is this->logfd)
-    return;
-
   struct stat st;
-  if (-1 is (fstat (this->logfd, &st)))
+  if (-1 is this->logfd or -1 is fstat (this->logfd, &st))
     return;
 
   int size = st.st_size;
 
   char *mbuf = mmap (0, size, PROT_READ, MAP_SHARED, this->logfd, 0);
 
-  if (NULL is mbuf)
-    return;
+  if (NULL is mbuf) return;
 
   char *buf = mbuf + size - 1;
 
@@ -1238,10 +1240,10 @@ private void vt_video_add_log_lines (vwm_frame *this) {
     int rbts = 0;
     while (--size) {
       c = *--buf;
-      if (c is '\n')
-        break;
-      ifnot (c)
-        continue;
+
+      if (c is '\n') break;
+
+      ifnot (c) continue;
       b[rbts++] = c;
     }
 
@@ -1257,8 +1259,8 @@ private void vt_video_add_log_lines (vwm_frame *this) {
 
     int idx = 0;
     for (int i = 0; i < this->num_cols; i++) {
-      if (idx >= blen)
-        break;
+      if (idx >= blen) break;
+
       this->videomem[lines-1][i] =
          (int) ustring_to_code (nbuf, &idx);
     }
@@ -3238,6 +3240,12 @@ private void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
     Vwin.set.separators (win, DONOT_DRAW);
 }
 
+private int vwm_default_edit_file_callback (vwm_t *this, char *file, void *object) {
+  (void) object;
+  char *argv[] = {$my(editor)->bytes, file, NULL};
+  return self(spawn, argv);
+}
+
 private int frame_edit_log (vwm_frame *frame) {
   if (frame->logfile is NULL)
     return NOTOK;
@@ -3245,7 +3253,6 @@ private int frame_edit_log (vwm_frame *frame) {
   vwm_win *win = frame->parent;
   vwm_t *this = win->parent;
 
-  char *argv[] = {$my(editor)->bytes, frame->logfile, NULL};
   int len;
 
   for (int i = 0; i < frame->num_rows; i++) {
@@ -3255,7 +3262,7 @@ private int frame_edit_log (vwm_frame *frame) {
     write (frame->logfd, buf, len);
   }
 
-  self(spawn, argv);
+  $my(edit_file_callback) (this, frame->logfile, $my(user_object));
 
   vt_video_add_log_lines (frame);
   Vwin.draw (win);
@@ -3270,6 +3277,10 @@ private char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
   for (; i < num; i++) name[i] = 'a' + ((*name_gen)++ % 26);
   name[num] = '\0';
   return name;
+}
+
+private int win_get_num_frames (vwm_win *this) {
+  return this->length;
 }
 
 private vwm_frame *win_get_frame_at (vwm_win *this, int idx) {
@@ -3415,6 +3426,8 @@ private pid_t frame_fork (vwm_frame *frame) {
   if (frame->pid isnot -1)
     return frame->pid;
 
+  char pid[8];  snprintf (pid, 6, "%d", getpid ());
+
   vwm_t *this = frame->parent->parent;
 
   signal (SIGWINCH, SIG_IGN);
@@ -3467,7 +3480,7 @@ private pid_t frame_fork (vwm_frame *frame) {
     setenv ("TERM",  $my(term)->name, 1);
     setenv ("LINES", rows, 1);
     setenv ("COLUMNS", cols, 1);
-    setenv ("VWM", "1", 1);
+    setenv ("VWM", pid, 1);
 
     execvp (frame->argv[0], frame->argv);
     fprintf (stderr, "execvp() failed for command: '%s'\n", frame->argv[0]);
@@ -3585,7 +3598,10 @@ private int vwm_main (vwm_t *this) {
 
   vwm_frame *frame = win->head;
   while (frame) {
-    if (frame->argv isnot NULL and frame->pid is -1)
+    if (frame->argv is NULL)
+      Vframe.set.command (frame, DEFAULT_APP);
+
+    if (frame->pid is -1)
       Vframe.fork (frame);
 
     frame = frame->next;
@@ -3720,7 +3736,8 @@ private int vwm_default_rline_callback (vwm_t *this, vwm_win *win, vwm_frame *fr
 
 private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char *input_buf) {
   if (input_buf[0] isnot MODE_KEY) {
-    fd_write (frame->fd, input_buf, 1);
+    if (-1 isnot frame->fd)
+      fd_write (frame->fd, input_buf, 1);
     return OK;
   }
 
@@ -3753,6 +3770,7 @@ getc_again:
         int retval = $my(rline_callback) (this, win, frame, $my(user_object));
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
+
       }
       break;
 
@@ -3792,6 +3810,14 @@ getc_again:
 
       $my(last_win) = win;
       win = self(set.current_at, $my(length) - 1);
+      vwm_frame *it = win->head;
+      char *argv[] = {DEFAULT_APP, NULL};
+      while (it) {
+        Vframe.set.argv (it, 1, argv);
+        Vframe.fork (it);
+        it = it->next;
+      }
+
       Vwin.draw (win);
 
       break;
@@ -3805,8 +3831,18 @@ getc_again:
       Vwin.delete_frame (win, frame, DRAW);
       break;
 
-    case 's':
-      Vwin.add_frame (win, 0, NULL, DRAW);
+    case CTRL('l'):
+      Vwin.draw (win);
+      break;
+
+    case 'l':
+      Vframe.clear (frame);
+      break;
+
+    case 's': {
+          char *argv[] = {DEFAULT_APP, NULL};
+          Vwin.add_frame (win, 1, argv, DRAW);
+        }
       break;
 
     case 'S': {
@@ -3835,6 +3871,11 @@ getc_again:
 
       break;
 
+    case PAGE_UP_KEY:
+    case 'E':
+      Vframe.edit_log (frame);
+      break;
+
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
     case 'w':
@@ -3847,11 +3888,6 @@ getc_again:
       self(change_win, win,
           (c is ARROW_RIGHT_KEY) ? NEXT_POS :
           (c is '`') ? LAST_POS : PREV_POS, DRAW);
-      break;
-
-    case PAGE_UP_KEY:
-    case 'E':
-      Vframe.edit_log (frame);
       break;
 
     case '+':
@@ -3937,7 +3973,8 @@ public vwm_t *__init_vwm__ (void) {
         .current_at = vwm_set_current_at,
         .user_object = vwm_set_user_object,
         .rline_callback =  vwm_set_rline_callback,
-        .on_tab_callback = vwm_set_on_tab_callback
+        .on_tab_callback = vwm_set_on_tab_callback,
+        .edit_file_callback = vwm_set_edit_file_callback
       },
       .new = (vwm_new_self) {
         .win = vwm_new_win,
@@ -3972,8 +4009,9 @@ public vwm_t *__init_vwm__ (void) {
         .separators = win_set_separators
       },
       .get = (vwm_win_get_self) {
+        .frame_at = win_get_frame_at,
         .frame_idx = win_get_frame_idx,
-        .frame_at = win_get_frame_at
+        .num_frames = win_get_num_frames
       },
       .frame = (vwm_win_frame_self) {
         .change = win_frame_change,
@@ -4019,6 +4057,7 @@ public vwm_t *__init_vwm__ (void) {
   self(new.term);
   self(set.rline_callback, vwm_default_rline_callback);
   self(set.on_tab_callback, vwm_default_on_tab_callback);
+  self(set.edit_file_callback, vwm_default_edit_file_callback);
   self(set.tmpdir, NULL, 0);
 
   VWM = this;

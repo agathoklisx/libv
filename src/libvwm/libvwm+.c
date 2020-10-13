@@ -27,16 +27,14 @@ static vwm_ex_t *ThisVwm;
 #define Vwm    ThisVwm->vwm->self
 #define Vwin   ThisVwm->vwm->win
 #define Vframe ThisVwm->vwm->frame
-//#define Vterm  ThisVwm->vwm->term
+#define Vterm  ThisVwm->vwm->term
 
 private void __ed_set_topline_void (ed_t *ed, buf_t *this) {
   (void) ed; (void) this; // There is no way to change
 }
 
 private int exit_ed (ed_t *ed, int retval) {
-  int state = Ed.get.state (ed);
-  state |= ED_PAUSE;
-  Ed.set.state (ed, state);
+  Ed.set.state_bit (ed, ED_PAUSE);
   return retval;
 }
 
@@ -53,20 +51,17 @@ private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
     retval = VWM_QUIT;
     goto theend;
 
-  } else if (Cstring.eq (com->bytes, "framedelete")) {
+  } else if (Cstring.eq (com->bytes, "frame_delete")) {
     Vwin.delete_frame (Vwm.get.current_win (ex->vwm),
         Vwm.get.current_frame (ex->vwm), DRAW);
     retval = OK;
     goto theend;
-  } else if (Cstring.eq (com->bytes, "split")) {
-    Vwin.add_frame (Vwm.get.current_win (ex->vwm), 0, NULL, DRAW);
+  } else if (Cstring.eq (com->bytes, "split_and_fork")) {
     retval = OK;
-    goto theend;
-  } else if (Cstring.eq (com->bytes, "fork")) {
-    retval = OK;
-    vwm_frame *frame = Vwm.get.current_frame (ex->vwm);
-    pid_t pid = Vframe.get.pid (frame);
-    if (pid > 0) goto theend;
+
+    vwm_win *win = Vwm.get.current_win (ex->vwm);
+    vwm_frame *frame = Vwin.add_frame (win, 0, NULL, DONOT_DRAW);
+    if (NULL is frame)  goto theend;
 
     string_t *command = Rline.get.anytype_arg (rl, "command");
     if (NULL is command) {
@@ -102,8 +97,20 @@ private int tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *obj
   Rline.set.opts (rl, opts);
 
   int retval = Buf.rline (&ex->buf, rl);
+
   win = Vwm.get.current_win (this);
-  Vwin.draw (win);
+
+  ifnot (Vwin.get.num_frames (win)) {
+    Vwm.change_win (this, win, PREV_POS, DONOT_DRAW);
+
+    Vwm.release_win (this, win);
+
+    win = Vwm.get.current_win (this);
+  }
+
+  ifnot (NULL is win)
+    Vwin.draw (win);
+
   return retval;
 }
 
@@ -121,8 +128,45 @@ private int rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *o
   Rline.set.state (rl, state);
 
   int retval = Buf.rline (&ex->buf, rl);
+
   win = Vwm.get.current_win (this);
-  Vwin.draw (win);
+
+  ifnot (Vwin.get.num_frames (win)) {
+    Vwm.change_win (this, win, PREV_POS, DONOT_DRAW);
+
+    Vwm.release_win (this, win);
+
+    win = Vwm.get.current_win (this);
+  }
+
+  ifnot (NULL is win)
+    Vwin.draw (win);
+
+  return retval;
+}
+
+private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
+  vwm_term *term =  Vwm.get.term (vwm);
+
+  vwm_ex_t *ex = (vwm_ex_t *) object;
+
+  ed_t *ed = E.new (ex->__E__, QUAL(ED_INIT,
+      .num_win = 1, .init_cb = __init_ext__,
+      .term_flags = (TERM_DONOT_CLEAR_SCREEN|TERM_DONOT_RESTORE_SCREEN)));
+
+  E.set.state_bit (THIS_E, E_DONOT_CHANGE_FOCUS|E_PAUSE);
+
+  win_t *win = Ed.get.current_win (ed);
+  buf_t *buf = Win.buf.new (win, QUAL(BUF_INIT, .fname = file));
+  Win.append_buf (win, buf);
+  Win.set.current_buf (win, 0, DONOT_DRAW);
+
+  int retval = E.main (ex->__E__, buf);
+
+  E.delete (ex->__E__, E.get.idx (ex->__E__, ed), 0);
+
+  Vterm.raw_mode (term);
+
   return retval;
 }
 
@@ -135,20 +179,22 @@ private int __init_editor__ (vwm_ex_t *ex) {
 
   E.set.at_init_cb (ex->__E__, __init_ext__);
   E.set.at_exit_cb (ex->__E__, __deinit_ext__);
+  E.set.state_bit  (ex->__E__, E_DONOT_RESTORE_TERM_STATE);
 
   ex->ed = E.new (ex->__E__, QUAL(ED_INIT,
       .num_win = 1,
-      .init_cb = __init_ext__));
+      .init_cb = __init_ext__,
+      .term_flags = TERM_DONOT_CLEAR_SCREEN|TERM_DONOT_RESTORE_SCREEN|TERM_DONOT_SAVE_SCREEN
+        ));
 
   Ed.deinit_commands (ex->ed);
 
   Ed.append.rline_command (ex->ed, "quit", 0, 0);
-  Ed.append.rline_command (ex->ed, "framedelete", 0, 0);
-  Ed.append.rline_command (ex->ed, "split", 0, 0);
-  Ed.append.rline_command (ex->ed, "fork", 0, 0);
+  Ed.append.rline_command (ex->ed, "frame_delete", 0, 0);
+  Ed.append.rline_command (ex->ed, "split_and_fork", 0, 0);
 
-  Ed.append.command_arg (ex->ed, "framedelete", "--idx=", 6);
-  Ed.append.command_arg (ex->ed, "fork",        "--command=", 10);
+  Ed.append.command_arg (ex->ed, "frame_delete",    "--idx=", 6);
+  Ed.append.command_arg (ex->ed, "split_and_fork",  "--command=", 10);
 
   Ed.set.rline_cb (ex->ed, __rline_cb__);
 
@@ -189,6 +235,7 @@ public vwm_ex_t *__init_vwm_ex__ (vwm_t *vwm) {
   Vwm.set.user_object (vwm, (void *) ex);
   Vwm.set.rline_callback (vwm, rline_callback);
   Vwm.set.on_tab_callback (vwm, tab_callback);
+  Vwm.set.edit_file_callback (vwm, edit_file_callback);
 
   return ex;
 }
