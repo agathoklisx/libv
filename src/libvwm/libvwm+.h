@@ -1,6 +1,8 @@
 #include <libved.h>
 #include <libved+.h>
 
+typedef void (*EdToplineMethod) (ed_t *, buf_t *);
+
 typedef struct vwm_ex_t {
   vwm_t *vwm;
 
@@ -11,6 +13,7 @@ typedef struct vwm_ex_t {
   win_t  *win;
   buf_t  *buf;
 
+  EdToplineMethod orig_topline;
   string_t *topline;
   video_t  *video;
 } vwm_ex_t;

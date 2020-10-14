@@ -30,12 +30,46 @@ static vwm_ex_t *ThisVwm;
 #define Vterm  ThisVwm->vwm->term
 
 private void __ed_set_topline_void (ed_t *ed, buf_t *this) {
-  (void) ed; (void) this; // There is no way to change
+  (void) ed; (void) this;
+  video_t *video = Ed.get.video (ed);
+  string_t *topline = Ed.get.topline (ed);
+  String.replace_with (topline, "[Command Mode] VirtualWindowManager");
+  Video.set.row_with (video, 0, topline->bytes);
 }
 
 private int exit_ed (ed_t *ed, int retval) {
   Ed.set.state_bit (ed, ED_PAUSE);
   return retval;
+}
+
+private char *strstr (const char *str, const char *substr) {
+  while (*str != '\0') {
+    if (*str == *substr) {
+      const char *spa = str + 1;
+      const char *spb = substr + 1;
+
+      while (*spa && *spb){
+        if (*spa != *spb)
+          break;
+        spa++; spb++;
+      }
+
+      if (*spb == '\0')
+        return (char *) str;
+    }
+
+    str++;
+  }
+
+  return NULL;
+}
+
+private string_t *__filter_arg__ (string_t *);
+private string_t *__filter_arg__ (string_t *arg) {
+  char *sp = strstr (arg->bytes, "--fname=");
+  if (NULL is sp) return arg;
+  String.delete_numbytes_at (arg, 8, sp - arg->bytes);
+  return __filter_arg__ (arg);
 }
 
 private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
@@ -65,10 +99,11 @@ private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
 
     string_t *command = Rline.get.anytype_arg (rl, "command");
     if (NULL is command) {
-      char *argv[] = {Vwm.get.shell (ex->vwm), NULL};
-      Vframe.set.argv (frame, 1, argv);
-    } else
+      Vframe.set.command (frame, Vwm.get.default_app (ex->vwm));
+    } else {
+      command = __filter_arg__ (command);
       Vframe.set.command (frame, command->bytes);
+    }
 
     Vframe.fork (frame);
     goto theend;
@@ -150,6 +185,8 @@ private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
 
   vwm_ex_t *ex = (vwm_ex_t *) object;
 
+  Ed.set.topline = ex->orig_topline;
+
   ed_t *ed = E.new (ex->__E__, QUAL(ED_INIT,
       .num_win = 1, .init_cb = __init_ext__,
       .term_flags = (TERM_DONOT_CLEAR_SCREEN|TERM_DONOT_RESTORE_SCREEN)));
@@ -167,6 +204,7 @@ private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
 
   Vterm.raw_mode (term);
 
+  Ed.set.topline = __ed_set_topline_void;
   return retval;
 }
 
@@ -194,7 +232,7 @@ private int __init_editor__ (vwm_ex_t *ex) {
   Ed.append.rline_command (ex->ed, "split_and_fork", 0, 0);
 
   Ed.append.command_arg (ex->ed, "frame_delete",    "--idx=", 6);
-  Ed.append.command_arg (ex->ed, "split_and_fork",  "--command=", 10);
+  Ed.append.command_arg (ex->ed, "split_and_fork",  "--command={", 11);
 
   Ed.set.rline_cb (ex->ed, __rline_cb__);
 
@@ -216,9 +254,12 @@ private int __init_editor__ (vwm_ex_t *ex) {
 
   ex->video = Ed.get.video (ex->ed);
   ex->topline = Ed.get.topline (ex->ed);
+
   String.clear (ex->topline);
   String.append (ex->topline, "[Command Mode] VirtualWindowManager");
   Video.set.row_with (ex->video, 0, ex->topline->bytes);
+
+  ex->orig_topline = Ed.set.topline;
   Ed.set.topline = __ed_set_topline_void;
 
   return OK;

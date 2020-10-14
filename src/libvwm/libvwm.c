@@ -31,7 +31,7 @@ static vwm_t *VWM;
 #endif
 
 #ifndef EDITOR
-#define EDITOR "vim"
+#define EDITOR "vi"
 #endif
 
 #ifndef DEFAULT_APP
@@ -306,6 +306,7 @@ struct vwm_prop {
   char *tmpdir;
 
   string_t
+    *default_app,
     *shell,
     *editor;
 
@@ -907,6 +908,14 @@ private void vwm_set_editor (vwm_t *this, char *editor) {
   string_append_with_len ($my(editor), editor, len);
 }
 
+private void vwm_set_default_app (vwm_t *this, char *app) {
+  if (NULL is app) return;
+  size_t len = bytelen (app);
+  ifnot (len) return;
+  string_clear ($my(default_app));
+  string_append_with_len ($my(default_app), app, len);
+}
+
 private void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
   $my(on_tab_callback) = cb;
 }
@@ -1159,6 +1168,10 @@ private char *vwm_get_shell (vwm_t *this) {
 
 private char  *vwm_get_editor (vwm_t *this) {
   return $my(editor)->bytes;
+}
+
+private char  *vwm_get_default_app (vwm_t *this) {
+  return $my(default_app)->bytes;
 }
 
 private vwm_win *vwm_pop_win_at (vwm_t *this, int idx) {
@@ -2525,27 +2538,25 @@ private void frame_process_output (vwm_frame *this, char *buf, int len) {
   vt_write (this->render->bytes, stdout);
 }
 
-private void frame_release_argv (vwm_frame *this) {
-  if (NULL is this->argv) return;
-  for (int i = 0; i <= this->argc; i++)
-    free (this->argv[i]);
-  free (this->argv);
-  this->argv = NULL;
-  this->argc = 0;
+private void argv_release (char **argv, int *argc) {
+  for (int i = 0; i <= *argc; i++) free (argv[i]);
+  free (argv);
+  *argc = 0;
+  argv = NULL;
 }
 
-private void frame_set_command (vwm_frame *this, char *command) {
-  if (NULL is command or 0 is bytelen (command))
-    return;
+private void frame_release_argv (vwm_frame *this) {
+  if (NULL is this->argv) return;
+  argv_release (this->argv, &this->argc);
+}
 
-  self(release_argv);
-
+private char **parse_command (char *command, int *argc) {
   char *sp = command;
   char *tokbeg;
   size_t len;
 
-  this->argc = 0;
-  this->argv = Alloc (sizeof (char *));
+  *argc = 0;
+  char **argv = Alloc (sizeof (char *));
 
   while (*sp) {
     while (*sp and *sp is ' ') sp++;
@@ -2571,21 +2582,30 @@ parse_quoted:
     len = (size_t) (sp - tokbeg);
 
 add_arg:
-    this->argc++;
-    this->argv = Realloc (this->argv, sizeof (char *) * (this->argc + 1));
-    this->argv[this->argc - 1] = Alloc (len + 1);
-    cstring_cp (this->argv[this->argc - 1], len + 1, tokbeg, len);
+    *argc += 1;
+    argv = Realloc (argv, sizeof (char *) * ((*argc) + 1));
+    argv[*argc - 1] = Alloc (len + 1);
+    cstring_cp (argv[*argc - 1], len + 1, tokbeg, len);
 
     ifnot (*sp) break;
     sp++;
   }
 
-  this->argv[this->argc] = (char *) NULL;
+  argv[*argc] = (char *) NULL;
 
-  return;
+  return argv;
 
 theerror:
+  argv_release (argv, argc);
+  return NULL;
+}
+
+private void frame_set_command (vwm_frame *this, char *command) {
+  if (NULL is command or 0 is bytelen (command))
+    return;
+
   self(release_argv);
+  this->argv = parse_command (command, &this->argc);
 }
 
 private void frame_set_argv (vwm_frame *this, int argc, char **argv) {
@@ -3242,8 +3262,14 @@ private void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
 
 private int vwm_default_edit_file_callback (vwm_t *this, char *file, void *object) {
   (void) object;
-  char *argv[] = {$my(editor)->bytes, file, NULL};
-  return self(spawn, argv);
+  size_t len = $my(editor)->num_bytes + bytelen (file);
+  char command[len + 2];
+  snprintf (command, len + 2, "%s %s", $my(editor)->bytes, file);
+  int argc = 0;
+  char **argv = parse_command (command, &argc);
+  int retval = self(spawn, argv);
+  argv_release (argv, &argc);
+  return retval;
 }
 
 private int frame_edit_log (vwm_frame *frame) {
@@ -3599,7 +3625,7 @@ private int vwm_main (vwm_t *this) {
   vwm_frame *frame = win->head;
   while (frame) {
     if (frame->argv is NULL)
-      Vframe.set.command (frame, DEFAULT_APP);
+      Vframe.set.command (frame, $my(default_app)->bytes);
 
     if (frame->pid is -1)
       Vframe.fork (frame);
@@ -3782,15 +3808,11 @@ getc_again:
       if (frame->pid isnot -1)
         break;
 
-      if (c is '!') {
-        char *argv[] = {$my(shell)->bytes, NULL};
-        Vframe.set.argv (frame, 1, argv);
-      } else {
-        if (NULL is frame->argv) {
-          char *argv[] = {DEFAULT_APP, NULL};
-          Vframe.set.argv (frame, 1, argv);
-        }
-      }
+      if (c is '!')
+        Vframe.set.command (frame, $my(shell)->bytes);
+      else
+        if (NULL is frame->argv)
+          Vframe.set.command (frame, $my(default_app)->bytes);
 
       Vframe.fork (frame);
       break;
@@ -3811,9 +3833,8 @@ getc_again:
       $my(last_win) = win;
       win = self(set.current_at, $my(length) - 1);
       vwm_frame *it = win->head;
-      char *argv[] = {DEFAULT_APP, NULL};
       while (it) {
-        Vframe.set.argv (it, 1, argv);
+        Vframe.set.command (it, $my(default_app)->bytes);
         Vframe.fork (it);
         it = it->next;
       }
@@ -3840,33 +3861,40 @@ getc_again:
       break;
 
     case 's': {
-          char *argv[] = {DEFAULT_APP, NULL};
-          Vwin.add_frame (win, 1, argv, DRAW);
+          vwm_frame *fr = Vwin.add_frame (win, 0, NULL, DRAW);
+          ifnot (NULL is fr) {
+            Vframe.set.command (fr, $my(default_app)->bytes);
+            Vframe.fork (fr);
+          }
         }
       break;
 
     case 'S': {
         utf8 w = self(getkey, STDIN_FILENO);
-        char *argv[] = {NULL, NULL};
-        int argc = 1;
+        char *command = $my(default_app)->bytes;
 
         switch (w) {
           case '!':
-            argv[0] = $my(shell)->bytes;
+            command = $my(shell)->bytes;
             break;
 
           case 'c':
-            argv[0] = DEFAULT_APP;
+            command = $my(default_app)->bytes;
             break;
 
           case 'e':
-            argv[0] = $my(editor)->bytes;
+            command = $my(editor)->bytes;
             break;
 
           default:
-            break;
+            return OK;
         }
-        Vwin.add_frame (win, argc, argv, DRAW);
+
+        vwm_frame *fr = Vwin.add_frame (win, 0, NULL, DRAW);
+        ifnot (NULL is fr) {
+          Vframe.set.command (fr, command);
+          Vframe.fork (fr);
+        }
       }
 
       break;
@@ -3962,6 +3990,7 @@ public vwm_t *__init_vwm__ (void) {
         .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
         .current_win = vwm_get_current_win,
+        .default_app = vwm_get_default_app,
         .current_frame = vwm_get_current_frame
       },
       .set = (vwm_set_self) {
@@ -3971,6 +4000,7 @@ public vwm_t *__init_vwm__ (void) {
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
         .current_at = vwm_set_current_at,
+        .default_app = vwm_set_default_app,
         .user_object = vwm_set_user_object,
         .rline_callback =  vwm_set_rline_callback,
         .on_tab_callback = vwm_set_on_tab_callback,
@@ -4046,8 +4076,11 @@ public vwm_t *__init_vwm__ (void) {
   };
 
   $my(tmpdir) = NULL;
+
   $my(editor) = string_new_with (EDITOR);
   $my(shell) = string_new_with (SHELL);
+  $my(default_app) = string_new_with (DEFAULT_APP);
+
   $my(length) = 0;
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
@@ -4082,6 +4115,7 @@ public void __deinit_vwm__ (vwm_t **thisp) {
 
   string_release ($my(editor));
   string_release ($my(shell));
+  string_release ($my(default_app));
 
   free (this->prop);
   free (this);

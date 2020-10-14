@@ -189,7 +189,8 @@ typedef struct vwm_get_self {
 
   char
     *(*shell) (vwm_t *),
-    *(*editor) (vwm_t *);
+    *(*editor) (vwm_t *),
+    *(*default_app) (vwm_t *);
 
   vwm_term *(*term) (vwm_t *);
   vwm_win *(*current_win) (vwm_t *);
@@ -203,6 +204,7 @@ typedef struct vwm_set_self {
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t),
+    (*default_app) (vwm_t *, char *),
     (*user_object) (vwm_t *, void *),
     (*rline_callback) (vwm_t *, RLineCallback),
     (*on_tab_callback) (vwm_t *, OnTabCallback),
