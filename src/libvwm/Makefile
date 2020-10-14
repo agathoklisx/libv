@@ -2,7 +2,7 @@ THIS_LIBNAME := vwm
 NAME         := vwm
 
 API := 0
-REV := 1
+REV := 2
 
 # macOS doesn't have realpath by default (available through coreutils)
 # THISDIR := $(shell realpath .)

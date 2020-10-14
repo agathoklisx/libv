@@ -22,15 +22,39 @@
 #include <libvwm.h>
 #include <libvwm+.h>
 
-static vwm_ex_t *ThisVwm;
+#ifdef self
+#undef self
+#endif
 
-#define Vwm    ThisVwm->vwm->self
-#define Vwin   ThisVwm->vwm->win
-#define Vframe ThisVwm->vwm->frame
-#define Vterm  ThisVwm->vwm->term
+#ifdef $my
+#undef $my
+#endif
 
-private void __ed_set_topline_void (ed_t *ed, buf_t *this) {
-  (void) ed; (void) this;
+//#define self(__f__, ...) this->self.__f__ (this, ##__VA_ARGS__)
+#define $my(__p__) this->prop->__p__
+
+#define Vwm    $my(vwm)->self
+#define Vwin   $my(vwm)->win
+#define Vframe $my(vwm)->frame
+#define Vterm  $my(vwm)->term
+
+struct vwm_ex_prop {
+  vwm_t *vwm;
+
+  this_T *__This__;
+  E_T    *__E__;
+
+  ed_t   *ed;
+  win_t  *win;
+  buf_t  *buf;
+
+  EdToplineMethod orig_topline;
+  string_t *topline;
+  video_t  *video;
+};
+
+private void __ed_set_topline_void (ed_t *ed, buf_t *buf) {
+  (void) ed; (void) buf;
   video_t *video = Ed.get.video (ed);
   string_t *topline = Ed.get.topline (ed);
   String.replace_with (topline, "[Command Mode] VirtualWindowManager");
@@ -74,32 +98,32 @@ private string_t *__filter_arg__ (string_t *arg) {
 
 private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
   (void) bufp; (void) c;
-  vwm_ex_t *ex = (vwm_ex_t *) Rline.get.user_object (rl);
+  vwm_ex *this = (vwm_ex *) Rline.get.user_object (rl);
   int retval = RLINE_NO_COMMAND;
   string_t *com = Rline.get.command (rl);
 
   if (Cstring.eq (com->bytes, "quit")) {
-    int state = Vwm.get.state (ex->vwm);
+    int state = Vwm.get.state ($my(vwm));
     state |= VWM_QUIT;
-    Vwm.set.state (ex->vwm, state);
+    Vwm.set.state ($my(vwm), state);
     retval = VWM_QUIT;
     goto theend;
 
   } else if (Cstring.eq (com->bytes, "frame_delete")) {
-    Vwin.delete_frame (Vwm.get.current_win (ex->vwm),
-        Vwm.get.current_frame (ex->vwm), DRAW);
+    Vwin.delete_frame (Vwm.get.current_win ($my(vwm)),
+        Vwm.get.current_frame ($my(vwm)), DRAW);
     retval = OK;
     goto theend;
   } else if (Cstring.eq (com->bytes, "split_and_fork")) {
     retval = OK;
 
-    vwm_win *win = Vwm.get.current_win (ex->vwm);
+    vwm_win *win = Vwm.get.current_win ($my(vwm));
     vwm_frame *frame = Vwin.add_frame (win, 0, NULL, DONOT_DRAW);
     if (NULL is frame)  goto theend;
 
     string_t *command = Rline.get.anytype_arg (rl, "command");
     if (NULL is command) {
-      Vframe.set.command (frame, Vwm.get.default_app (ex->vwm));
+      Vframe.set.command (frame, Vwm.get.default_app ($my(vwm)));
     } else {
       command = __filter_arg__ (command);
       Vframe.set.command (frame, command->bytes);
@@ -112,17 +136,17 @@ private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
 theend:
   String.free (com);
 
-  return exit_ed (ex->ed, retval);
+  return exit_ed ($my(ed), retval);
 }
 
-private int tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+private int tab_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
   (void) frame;
-  vwm_ex_t *ex = (vwm_ex_t *) object;
-  ex->win = Ed.get.current_win (ex->ed);
-  ex->buf = Ed.get.current_buf (ex->ed);
-  Win.draw (ex->win);
-  rline_t *rl = Ed.rline.new_with (ex->ed, "\t");
-  Rline.set.user_object (rl, (void *) ex);
+  vwm_ex *this = (vwm_ex *) object;
+  $my(win) = Ed.get.current_win ($my(ed));
+  $my(buf) = Ed.get.current_buf ($my(ed));
+  Win.draw ($my(win));
+  rline_t *rl = Ed.rline.new_with ($my(ed), "\t");
+  Rline.set.user_object (rl, (void *) this);
 
   int state = Rline.get.state (rl);
   state |= RL_PROCESS_CHAR;
@@ -131,16 +155,16 @@ private int tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *obj
   opts |= RL_OPT_RETURN_AFTER_TAB_COMPLETION;
   Rline.set.opts (rl, opts);
 
-  int retval = Buf.rline (&ex->buf, rl);
+  int retval = Buf.rline (&$my(buf), rl);
 
-  win = Vwm.get.current_win (this);
+  win = Vwm.get.current_win (vwm);
 
   ifnot (Vwin.get.num_frames (win)) {
-    Vwm.change_win (this, win, PREV_POS, DONOT_DRAW);
+    Vwm.change_win (vwm, win, PREV_POS, DONOT_DRAW);
 
-    Vwm.release_win (this, win);
+    Vwm.release_win (vwm, win);
 
-    win = Vwm.get.current_win (this);
+    win = Vwm.get.current_win (vwm);
   }
 
   ifnot (NULL is win)
@@ -149,29 +173,29 @@ private int tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *obj
   return retval;
 }
 
-private int rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+private int rline_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
   (void) frame;
-  vwm_ex_t *ex = (vwm_ex_t *) object;
-  ex->win = Ed.get.current_win (ex->ed);
-  ex->buf = Ed.get.current_buf (ex->ed);
-  Win.draw (ex->win);
-  rline_t *rl = Ed.rline.new_with (ex->ed, "\t");
-  Rline.set.user_object (rl, (void *) ex);
+  vwm_ex *this = (vwm_ex *) object;
+  $my(win) = Ed.get.current_win ($my(ed));
+  $my(buf) = Ed.get.current_buf ($my(ed));
+  Win.draw ($my(win));
+  rline_t *rl = Ed.rline.new_with ($my(ed), "\t");
+  Rline.set.user_object (rl, (void *) this);
 
   int state = Rline.get.state (rl);
   state |= RL_PROCESS_CHAR;
   Rline.set.state (rl, state);
 
-  int retval = Buf.rline (&ex->buf, rl);
+  int retval = Buf.rline (&$my(buf), rl);
 
-  win = Vwm.get.current_win (this);
+  win = Vwm.get.current_win (vwm);
 
   ifnot (Vwin.get.num_frames (win)) {
-    Vwm.change_win (this, win, PREV_POS, DONOT_DRAW);
+    Vwm.change_win (vwm, win, PREV_POS, DONOT_DRAW);
 
-    Vwm.release_win (this, win);
+    Vwm.release_win (vwm, win);
 
-    win = Vwm.get.current_win (this);
+    win = Vwm.get.current_win (vwm);
   }
 
   ifnot (NULL is win)
@@ -181,13 +205,13 @@ private int rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *o
 }
 
 private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
+  vwm_ex *this = (vwm_ex *) object;
+
   vwm_term *term =  Vwm.get.term (vwm);
 
-  vwm_ex_t *ex = (vwm_ex_t *) object;
+  Ed.set.topline = $my(orig_topline);
 
-  Ed.set.topline = ex->orig_topline;
-
-  ed_t *ed = E.new (ex->__E__, QUAL(ED_INIT,
+  ed_t *ed = E.new ($my(__E__), QUAL(ED_INIT,
       .num_win = 1, .init_cb = __init_ext__,
       .term_flags = (TERM_DONOT_CLEAR_SCREEN|TERM_DONOT_RESTORE_SCREEN)));
 
@@ -198,9 +222,9 @@ private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
   Win.append_buf (win, buf);
   Win.set.current_buf (win, 0, DONOT_DRAW);
 
-  int retval = E.main (ex->__E__, buf);
+  int retval = E.main ($my(__E__), buf);
 
-  E.delete (ex->__E__, E.get.idx (ex->__E__, ed), 0);
+  E.delete ($my(__E__), E.get.idx ($my(__E__), ed), 0);
 
   Vterm.raw_mode (term);
 
@@ -208,86 +232,113 @@ private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
   return retval;
 }
 
-private int __init_editor__ (vwm_ex_t *ex) {
+private vwm_t *vex_get_vwm (vwm_ex *this) {
+  return $my(vwm);
+}
+
+private int vex_init_ved (vwm_ex *this) {
   if (NULL is __init_this__ ())
     return NOTOK;
 
-  ex->__This__ = __This__;
-  ex->__E__    = ex->__This__->__E__;
+  $my(__This__) = __This__;
+  $my(__E__)    = $my(__This__)->__E__;
 
-  E.set.at_init_cb (ex->__E__, __init_ext__);
-  E.set.at_exit_cb (ex->__E__, __deinit_ext__);
-  E.set.state_bit  (ex->__E__, E_DONOT_RESTORE_TERM_STATE);
+  E.set.at_init_cb ($my(__E__), __init_ext__);
+  E.set.at_exit_cb ($my(__E__), __deinit_ext__);
+  E.set.state_bit  ($my(__E__), E_DONOT_RESTORE_TERM_STATE);
 
-  ex->ed = E.new (ex->__E__, QUAL(ED_INIT,
+  $my(ed) = E.new ($my(__E__), QUAL(ED_INIT,
       .num_win = 1,
       .init_cb = __init_ext__,
       .term_flags = TERM_DONOT_CLEAR_SCREEN|TERM_DONOT_RESTORE_SCREEN|TERM_DONOT_SAVE_SCREEN
         ));
 
-  Ed.deinit_commands (ex->ed);
+  Ed.deinit_commands ($my(ed));
 
-  Ed.append.rline_command (ex->ed, "quit", 0, 0);
-  Ed.append.rline_command (ex->ed, "frame_delete", 0, 0);
-  Ed.append.rline_command (ex->ed, "split_and_fork", 0, 0);
+  Ed.append.rline_command ($my(ed), "quit", 0, 0);
+  Ed.append.rline_command ($my(ed), "frame_delete", 0, 0);
+  Ed.append.rline_command ($my(ed), "split_and_fork", 0, 0);
 
-  Ed.append.command_arg (ex->ed, "frame_delete",    "--idx=", 6);
-  Ed.append.command_arg (ex->ed, "split_and_fork",  "--command={", 11);
+  Ed.append.command_arg ($my(ed), "frame_delete",    "--idx=", 6);
+  Ed.append.command_arg ($my(ed), "split_and_fork",  "--command={", 11);
 
-  Ed.set.rline_cb (ex->ed, __rline_cb__);
+  Ed.set.rline_cb ($my(ed), __rline_cb__);
 
-  ex->win = Ed.get.current_win (ex->ed);
-
-  ex->buf = Win.buf.new (ex->win, QUAL(BUF_INIT,
+  $my(win) = Ed.get.current_win ($my(ed));
+  $my(buf) = Win.buf.new ($my(win), QUAL(BUF_INIT,
       .fname = STR_FMT
-         ("%s/vwm_unamed", E.get.env (ex->__E__, "data_dir")->bytes)));
+         ("%s/vwm_unamed", E.get.env ($my(__E__), "data_dir")->bytes)));
 
-  Buf.set.show_statusline (ex->buf, 0);
+  Buf.set.on_emptyline ($my(buf), "");
+  Buf.set.show_statusline ($my(buf), 0);
 
-  string_t *on_emptyline = String.new (2);
-  Buf.set.on_emptyline (ex->buf, on_emptyline);
+  Win.append_buf ($my(win), $my(buf));
+  Win.set.current_buf ($my(win), 0, DONOT_DRAW);
 
-  //Buf.set.normal.at_beg_cb (buf, __buf_on_normal_beg);
+  $my(video) = Ed.get.video ($my(ed));
+  $my(topline) = Ed.get.topline ($my(ed));
 
-  Win.append_buf (ex->win, ex->buf);
-  Win.set.current_buf (ex->win, 0, DONOT_DRAW);
+  String.clear ($my(topline));
+  String.append ($my(topline), "[Command Mode] VirtualWindowManager");
+  Video.set.row_with ($my(video), 0, $my(topline)->bytes);
 
-  ex->video = Ed.get.video (ex->ed);
-  ex->topline = Ed.get.topline (ex->ed);
-
-  String.clear (ex->topline);
-  String.append (ex->topline, "[Command Mode] VirtualWindowManager");
-  Video.set.row_with (ex->video, 0, ex->topline->bytes);
-
-  ex->orig_topline = Ed.set.topline;
+  $my(orig_topline) = Ed.set.topline;
   Ed.set.topline = __ed_set_topline_void;
+
+  Vwm.set.rline_callback ($my(vwm), rline_callback);
+  Vwm.set.on_tab_callback ($my(vwm), tab_callback);
+  Vwm.set.edit_file_callback ($my(vwm), edit_file_callback);
 
   return OK;
 }
 
-public vwm_ex_t *__init_vwm_ex__ (vwm_t *vwm) {
-  vwm_ex_t *ex = AllocType  (vwm_ex);
+private vwm_term *vex_init_term (vwm_ex *this, int *rows, int *cols) {
+  vwm_t *vwm = $my(vwm);
 
-  __init_editor__ (ex);
+  vwm_term *term =  Vwm.get.term (vwm);
 
-  ex->vwm = vwm;
-  ThisVwm = ex;
+  Vterm.raw_mode (term);
 
-  Vwm.set.user_object (vwm, (void *) ex);
-  Vwm.set.rline_callback (vwm, rline_callback);
-  Vwm.set.on_tab_callback (vwm, tab_callback);
-  Vwm.set.edit_file_callback (vwm, edit_file_callback);
+  Vterm.init_size (term, rows, cols);
 
-  return ex;
+  Vwm.set.size (vwm, *rows, *cols, 1);
+
+  return term;
 }
 
-public void __deinit_vwm_ex__ (vwm_ex_t **exp) {
-  if (NULL is *exp) return;
+public vwm_ex *__init_vwm_ex__ (vwm_t *vwm) {
+  vwm_ex *this = Alloc (sizeof (vwm_ex));
 
-  vwm_ex_t *ex = *exp;
+  this->prop = Alloc (sizeof (vwm_ex_prop));
 
-  __deinit_this__ (&ex->__This__);
+  this->self = (vwm_ex_self) {
+    .get = (vwm_ex_get_self) {
+      .vwm = vex_get_vwm
+    },
+    .init = (vwm_ex_init_self) {
+      .ved = vex_init_ved,
+      .term = vex_init_term
+    }
+  };
 
-  free (ex);
-  *exp = NULL;
+  if (NULL is vwm)
+    $my(vwm) = __init_vwm__ ();
+  else
+    $my(vwm) = vwm;
+
+  Vwm.set.user_object ($my(vwm), (void *) this);
+
+  return this;
+}
+
+public void __deinit_vwm_ex__ (vwm_ex **thisp) {
+  if (NULL is *thisp) return;
+
+  vwm_ex *this = *thisp;
+
+  __deinit_this__ (&$my(__This__));
+
+  free (this->prop);
+  free (this);
+  *thisp = NULL;
 }

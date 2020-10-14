@@ -17,27 +17,20 @@
 #include <libvwm.h>
 #include <libvwm+.h>
 
-static vwm_t *VWM;
-
-#define Vwm    VWM->self
-#define Vframe VWM->frame
-#define Vwin   VWM->win
-#define Vterm  VWM->term
+#define Vwm    this->self
+#define Vframe this->frame
+#define Vwin   this->win
+#define Vterm  this->term
+#define Vex    vex->self
 
 int main (int argc, char **argv) {
-  vwm_t *this = __init_vwm__ ();
-  VWM = this;
-
-  vwm_term *term =  Vwm.get.term (this);
-
-  Vterm.raw_mode (term);
+  vwm_ex *vex = __init_vwm_ex__ (NULL);
+  vwm_t  *this = Vex.get.vwm (vex);
 
   int rows, cols;
-  Vterm.init_size (term, &rows, &cols);
+  vwm_term *term = Vex.init.term (vex, &rows, &cols);
 
-  Vwm.set.size (this, rows, cols, 1);
-
-  vwm_ex_t *ex = __init_vwm_ex__ (this);
+  Vex.init.ved (vex);
 
   vwm_win *win = Vwm.new.win (this, "v", WinNewOpts (
     .rows = rows,
@@ -77,7 +70,7 @@ int main (int argc, char **argv) {
 
   Vterm.screen.restore (term);
 
-  __deinit_vwm_ex__ (&ex);
+  __deinit_vwm_ex__ (&vex);
   __deinit_vwm__ (&this);
 
   return retval;
