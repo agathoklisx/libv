@@ -1126,7 +1126,11 @@ private void vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
 }
 
 private vwm_win *vwm_set_current_at (vwm_t *this, int idx) {
-  DListSetCurrent ($myprop, idx);
+  vwm_win *cur_win = $my(current);
+  if (INDEX_ERROR isnot DListSetCurrent ($myprop, idx)) {
+    if (NULL isnot cur_win)
+      $my(last_win) = cur_win;
+  }
   return $my(current);
 }
 
@@ -1166,11 +1170,11 @@ private char *vwm_get_shell (vwm_t *this) {
   return $my(shell)->bytes;
 }
 
-private char  *vwm_get_editor (vwm_t *this) {
+private char *vwm_get_editor (vwm_t *this) {
   return $my(editor)->bytes;
 }
 
-private char  *vwm_get_default_app (vwm_t *this) {
+private char *vwm_get_default_app (vwm_t *this) {
   return $my(default_app)->bytes;
 }
 
@@ -3377,15 +3381,22 @@ private vwm_win *vwm_new_win (vwm_t *this, char *name, win_opts opts) {
     first_row = win->first_row;
 
   for (int i = 0; i < num_frames; i++) {
-    Vwin.new_frame (win, num_rows, first_row);
+    vwm_frame *frame = Vwin.new_frame (win, num_rows, first_row);
+    if (opts.commands isnot NULL) {
+      Vframe.set.command (frame, opts.commands[i]);
+      Vframe.fork (frame);
+    }
+
     first_row += num_rows + 1;
     num_rows = frame_rows;
   }
 
   win->last_frame = win->head;
 
-  if (opts.focus)
+  if (opts.focus or opts.draw) {
     win = self(set.current_at, $my(length) - 1);
+    Vwin.draw (win);
+  }
 
   return win;
 }
@@ -3817,30 +3828,26 @@ getc_again:
       Vframe.fork (frame);
       break;
 
-    case 'n':
-      ifnot (param)
-        param = 1;
-      else
-        if (param > MAX_FRAMES)
-          param = MAX_FRAMES;
+    case 'n': {
+        ifnot (param)
+          param = 1;
+        else
+          if (param > MAX_FRAMES)
+            param = MAX_FRAMES;
 
-      self(new.win, NULL, WinNewOpts (
-          .rows = $my(num_rows),
-          .cols = $my(num_cols),
-          .num_frames = param,
-          .max_frames = MAX_FRAMES));
+        char *commands[param];
+        for (int i = 0; i < param; i++)
+          commands[i] = $my(default_app)->bytes;
 
-      $my(last_win) = win;
-      win = self(set.current_at, $my(length) - 1);
-      vwm_frame *it = win->head;
-      while (it) {
-        Vframe.set.command (it, $my(default_app)->bytes);
-        Vframe.fork (it);
-        it = it->next;
-      }
-
-      Vwin.draw (win);
-
+        win = self(new.win, NULL, WinNewOpts (
+            .rows = $my(num_rows),
+            .cols = $my(num_cols),
+            .num_frames = param,
+            .max_frames = MAX_FRAMES,
+            .draw = 1,
+            .focus = 1,
+            .commands = commands));
+        }
       break;
 
     case 'k':
@@ -3963,7 +3970,6 @@ mutable public void __alloc_error_handler__ (int err, size_t size,
 
   exit (1);
 }
-
 
 public vwm_t *__init_vwm__ (void) {
   AllocErrorHandler = __alloc_error_handler__;

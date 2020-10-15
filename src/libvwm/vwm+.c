@@ -6,6 +6,12 @@
   A command can be accepted with the space key or if there is one left that|and matches
   the typed letters.
   An escape key cansels or if there is no match.
+  Similarly MODKEY-: brings you to the same readline interface, that can
+  offer argument|command|file completion.
+
+  This also allows editing log files without the need to fork.
+
+  It offers also an abstraction level to the applications.
  */
 
 #include <stdint.h>

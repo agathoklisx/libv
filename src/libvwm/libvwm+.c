@@ -53,17 +53,21 @@ struct vwm_ex_prop {
   video_t  *video;
 };
 
-private void __ed_set_topline_void (ed_t *ed, buf_t *buf) {
-  (void) ed; (void) buf;
-  video_t *video = Ed.get.video (ed);
-  string_t *topline = Ed.get.topline (ed);
-  String.replace_with (topline, "[Command Mode] VirtualWindowManager");
-  Video.set.row_with (video, 0, topline->bytes);
+private int cstring_cmp_n (const char *sa, const char *sb, size_t n) {
+  const uchar *spa = (const uchar *) sa;
+  const uchar *spb = (const uchar *) sb;
+  for (;n--; spa++, spb++) {
+    if (*spa != *spb)
+      return (*(uchar *) spa - *(uchar *) spb);
+
+    if (*spa == 0) return 0;
+  }
+
+  return 0;
 }
 
-private int exit_ed (ed_t *ed, int retval) {
-  Ed.set.state_bit (ed, ED_PAUSE);
-  return retval;
+private int cstring_eq_n  (const char *sa, const char *sb, size_t n) {
+  return (0 == cstring_cmp_n (sa, sb, n));
 }
 
 private char *strstr (const char *str, const char *substr) {
@@ -88,17 +92,31 @@ private char *strstr (const char *str, const char *substr) {
   return NULL;
 }
 
-private string_t *__filter_arg__ (string_t *);
-private string_t *__filter_arg__ (string_t *arg) {
-  char *sp = strstr (arg->bytes, "--fname=");
-  if (NULL is sp) return arg;
-  String.delete_numbytes_at (arg, 8, sp - arg->bytes);
-  return __filter_arg__ (arg);
+private void ed_set_topline_void (ed_t *ed, buf_t *buf) {
+  (void) ed; (void) buf;
+  video_t *video = Ed.get.video (ed);
+  string_t *topline = Ed.get.topline (ed);
+  String.replace_with (topline, "[Command Mode] VirtualWindowManager");
+  Video.set.row_with (video, 0, topline->bytes);
 }
 
-private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
+private int ed_exit (ed_t *ed, int retval) {
+  Ed.set.state_bit (ed, ED_PAUSE);
+  return retval;
+}
+
+private string_t *filter_ed_rline (string_t *);
+private string_t *filter_ed_rline (string_t *line) {
+  char *sp = strstr (line->bytes, "--fname=");
+  if (NULL is sp) return line;
+  String.delete_numbytes_at (line, 8, sp - line->bytes);
+  return filter_ed_rline (line);
+}
+
+private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
   (void) bufp; (void) c;
   vwm_ex *this = (vwm_ex *) Rline.get.user_object (rl);
+
   int retval = RLINE_NO_COMMAND;
   string_t *com = Rline.get.command (rl);
 
@@ -125,35 +143,89 @@ private int __rline_cb__ (buf_t **bufp, rline_t *rl, utf8 c) {
     if (NULL is command) {
       Vframe.set.command (frame, Vwm.get.default_app ($my(vwm)));
     } else {
-      command = __filter_arg__ (command);
+      command = filter_ed_rline (command);
       Vframe.set.command (frame, command->bytes);
     }
 
     Vframe.fork (frame);
+    goto theend;
+  } else if (Cstring.eq (com->bytes, "win_new")) {
+    string_t *a_draw = Rline.get.anytype_arg (rl, "draw");
+    string_t *a_focus = Rline.get.anytype_arg (rl, "focus");
+    string_t *a_num_frames = Rline.get.anytype_arg (rl, "num-frames");
+    Vstring_t *a_commands  = Rline.get.anytype_args (rl, "command");
+
+    int draw  = (NULL is a_draw  ? 1 : atoi (a_draw->bytes));
+    int focus = (NULL is a_focus ? 1 : atoi (a_focus->bytes));
+    int num_frames = (NULL is a_num_frames ? 1 : atoi (a_num_frames->bytes));
+    if (num_frames is 0 or num_frames > MAX_FRAMES) num_frames = 1;
+
+    char *commands[num_frames];
+    char *command = Vwm.get.default_app ($my(vwm));
+
+    if (NULL is a_commands) {
+      for (int i = 0; i < num_frames; i++)
+          commands[i] = command;
+    } else {
+      int num = 0;
+      vstring_t *it = a_commands->head;
+      while (it and num < num_frames) {
+        commands[num++] = it->data->bytes;
+        it = it->next;
+      }
+
+      while (num < num_frames)
+        commands[num++] = command;
+    }
+
+    Vwm.new.win ($my(vwm), NULL, WinNewOpts (
+        .rows = Vwm.get.lines ($my(vwm)),
+        .cols = Vwm.get.columns ($my(vwm)),
+        .num_frames = num_frames,
+        .max_frames = MAX_FRAMES,
+        .draw = draw,
+        .focus = focus,
+        .commands = commands));
+
+    Vstring.free (a_commands);
+    goto theend;
+  } else if (Cstring.eq (com->bytes, "ed")) {
+    string_t *line = Rline.get.line (rl);
+    String.delete_numbytes_at (line, 2, 0);
+    String.prepend (line, Vwm.get.editor ($my(vwm)));
+    line = filter_ed_rline (line);
+    char *commands[] = {line->bytes};
+    Vwm.new.win ($my(vwm), NULL, WinNewOpts (
+        .rows = Vwm.get.lines ($my(vwm)),
+        .cols = Vwm.get.columns ($my(vwm)),
+        .num_frames = 1,
+        .max_frames = MAX_FRAMES,
+        .focus = 1,
+        .draw = 1,
+        .commands = commands));
     goto theend;
   }
 
 theend:
   String.free (com);
 
-  return exit_ed ($my(ed), retval);
+  return ed_exit ($my(ed), retval);
 }
 
-private int tab_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
+private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object, int should_return) {
   (void) frame;
   vwm_ex *this = (vwm_ex *) object;
+
   $my(win) = Ed.get.current_win ($my(ed));
   $my(buf) = Ed.get.current_buf ($my(ed));
   Win.draw ($my(win));
+
   rline_t *rl = Ed.rline.new_with ($my(ed), "\t");
   Rline.set.user_object (rl, (void *) this);
+  Rline.set.state_bit (rl, RL_PROCESS_CHAR);
 
-  int state = Rline.get.state (rl);
-  state |= RL_PROCESS_CHAR;
-  Rline.set.state (rl, state);
-  int opts = Rline.get.opts (rl);
-  opts |= RL_OPT_RETURN_AFTER_TAB_COMPLETION;
-  Rline.set.opts (rl, opts);
+  if (should_return)
+    Rline.set.opts_bit (rl, RL_OPT_RETURN_AFTER_TAB_COMPLETION);
 
   int retval = Buf.rline (&$my(buf), rl);
 
@@ -173,43 +245,16 @@ private int tab_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *obje
   return retval;
 }
 
-private int rline_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
-  (void) frame;
-  vwm_ex *this = (vwm_ex *) object;
-  $my(win) = Ed.get.current_win ($my(ed));
-  $my(buf) = Ed.get.current_buf ($my(ed));
-  Win.draw ($my(win));
-  rline_t *rl = Ed.rline.new_with ($my(ed), "\t");
-  Rline.set.user_object (rl, (void *) this);
-
-  int state = Rline.get.state (rl);
-  state |= RL_PROCESS_CHAR;
-  Rline.set.state (rl, state);
-
-  int retval = Buf.rline (&$my(buf), rl);
-
-  win = Vwm.get.current_win (vwm);
-
-  ifnot (Vwin.get.num_frames (win)) {
-    Vwm.change_win (vwm, win, PREV_POS, DONOT_DRAW);
-
-    Vwm.release_win (vwm, win);
-
-    win = Vwm.get.current_win (vwm);
-  }
-
-  ifnot (NULL is win)
-    Vwin.draw (win);
-
-  return retval;
+private int vwm_tab_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
+  return vwm_new_rline (vwm, win, frame, object, 1);
 }
 
-private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
+private int vwm_rline_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
+  return vwm_new_rline (vwm, win, frame, object, 0);
+}
+
+private int vwm_edit_file_callback (vwm_t *vwm, char *file, void *object) {
   vwm_ex *this = (vwm_ex *) object;
-
-  vwm_term *term =  Vwm.get.term (vwm);
-
-  Ed.set.topline = $my(orig_topline);
 
   ed_t *ed = E.new ($my(__E__), QUAL(ED_INIT,
       .num_win = 1, .init_cb = __init_ext__,
@@ -222,13 +267,16 @@ private int edit_file_callback (vwm_t *vwm, char *file, void *object) {
   Win.append_buf (win, buf);
   Win.set.current_buf (win, 0, DONOT_DRAW);
 
+  Ed.set.topline = $my(orig_topline);
+
   int retval = E.main ($my(__E__), buf);
 
   E.delete ($my(__E__), E.get.idx ($my(__E__), ed), 0);
 
-  Vterm.raw_mode (term);
+  Ed.set.topline = ed_set_topline_void;
 
-  Ed.set.topline = __ed_set_topline_void;
+  Vterm.raw_mode (Vwm.get.term (vwm));
+
   return retval;
 }
 
@@ -256,13 +304,36 @@ private int vex_init_ved (vwm_ex *this) {
   Ed.deinit_commands ($my(ed));
 
   Ed.append.rline_command ($my(ed), "quit", 0, 0);
+
   Ed.append.rline_command ($my(ed), "frame_delete", 0, 0);
+  Ed.append.command_arg   ($my(ed), "frame_delete", "--idx=", 6);
+
   Ed.append.rline_command ($my(ed), "split_and_fork", 0, 0);
+  Ed.append.command_arg ($my(ed),   "split_and_fork", "--command={", 11);
 
-  Ed.append.command_arg ($my(ed), "frame_delete",    "--idx=", 6);
-  Ed.append.command_arg ($my(ed), "split_and_fork",  "--command={", 11);
+  Ed.append.rline_command ($my(ed), "win_new", 0, 0);
+  Ed.append.command_arg ($my(ed), "win_new", "--draw=", 7);
+  Ed.append.command_arg ($my(ed), "win_new", "--focus=", 8);
+  Ed.append.command_arg ($my(ed), "win_new", "--command={", 11);
+  Ed.append.command_arg ($my(ed), "win_new", "--num-frames=", 13);
 
-  Ed.set.rline_cb ($my(ed), __rline_cb__);
+  Ed.append.rline_command ($my(ed), "ed", 0, 0);
+  if (cstring_eq_n ("veda", Vwm.get.editor ($my(vwm)), 4)) {
+    Ed.append.command_arg ($my(ed), "ed", "--exit", 6);
+    Ed.append.command_arg ($my(ed), "ed", "--pager", 7);
+    Ed.append.command_arg ($my(ed), "ed", "--ftype=", 8);
+    Ed.append.command_arg ($my(ed), "ed", "--column=", 9);
+    Ed.append.command_arg ($my(ed), "ed", "--line-nr=", 10);
+    Ed.append.command_arg ($my(ed), "ed", "--num-win=", 10);
+    Ed.append.command_arg ($my(ed), "ed", "--exec-com=", 11);
+    Ed.append.command_arg ($my(ed), "ed", "--autosave=", 12);
+    Ed.append.command_arg ($my(ed), "ed", "--exit-quick", 13);
+    Ed.append.command_arg ($my(ed), "ed", "--load-file=", 13);
+    Ed.append.command_arg ($my(ed), "ed", "--backupfile", 13);
+    Ed.append.command_arg ($my(ed), "ed", "--backup-suffix=", 17);
+ }
+
+  Ed.set.rline_cb ($my(ed), ed_rline_cb);
 
   $my(win) = Ed.get.current_win ($my(ed));
   $my(buf) = Win.buf.new ($my(win), QUAL(BUF_INIT,
@@ -283,11 +354,11 @@ private int vex_init_ved (vwm_ex *this) {
   Video.set.row_with ($my(video), 0, $my(topline)->bytes);
 
   $my(orig_topline) = Ed.set.topline;
-  Ed.set.topline = __ed_set_topline_void;
+  Ed.set.topline = ed_set_topline_void;
 
-  Vwm.set.rline_callback ($my(vwm), rline_callback);
-  Vwm.set.on_tab_callback ($my(vwm), tab_callback);
-  Vwm.set.edit_file_callback ($my(vwm), edit_file_callback);
+  Vwm.set.rline_callback ($my(vwm), vwm_rline_callback);
+  Vwm.set.on_tab_callback ($my(vwm), vwm_tab_callback);
+  Vwm.set.edit_file_callback ($my(vwm), vwm_edit_file_callback);
 
   return OK;
 }

@@ -63,7 +63,9 @@ typedef struct win_opts {
     first_row,
     first_col,
     num_frames,
-    max_frames;
+    max_frames,
+    draw;
+  char **commands;
 } win_opts;
 
 #define WinNewOpts(...) (win_opts) {  \
@@ -74,6 +76,8 @@ typedef struct win_opts {
   .first_col = 1,                     \
   .num_frames = 1,                    \
   .max_frames = 3,                    \
+  .draw = DONOT_DRAW,                 \
+  .commands = NULL,                   \
   __VA_ARGS__ }
 
 typedef struct vwm_term_screen_self {
@@ -215,7 +219,7 @@ typedef struct vwm_set_self {
 } vwm_set_self;
 
 typedef struct vwm_new_self {
-  vwm_win  *(*win) (vwm_t *, char *, win_opts);
+  vwm_win *(*win) (vwm_t *, char *, win_opts);
   vwm_term *(*term) (vwm_t *);
 } vwm_new_self;
 
