@@ -29,8 +29,9 @@
  */
 
 #include <stdio.h>
-#include <sys/types.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/termios.h>
 
 #include <libvwm.h>
 

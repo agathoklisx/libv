@@ -13,7 +13,6 @@ typedef unsigned int uint;
 typedef unsigned char uchar;
 typedef signed int utf8;
 
-
 #ifndef MAX_FRAMES
 #define MAX_FRAMES 3
 #endif
@@ -54,6 +53,22 @@ typedef void (*Unimplemented) (vwm_frame *, const char *, int, int);
 typedef int  (*OnTabCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*RLineCallback) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*EditFileCallback) (vwm_t *, char *, void *);
+
+struct vwm_term {
+  struct termios
+    orig_mode,
+    raw_mode;
+
+  char
+    mode,
+    *name;
+
+  int
+    lines,
+    columns,
+    out_fd,
+    in_fd;
+};
 
 typedef struct win_opts {
   int
@@ -185,6 +200,8 @@ typedef struct vwm_win_self {
 } vwm_win_self;
 
 typedef struct vwm_get_self {
+  void
+    *(*user_object) (vwm_t *);
   int
     (*state) (vwm_t *),
     (*lines) (vwm_t *),
@@ -194,6 +211,7 @@ typedef struct vwm_get_self {
   char
     *(*shell) (vwm_t *),
     *(*editor) (vwm_t *),
+     (*mode_key) (vwm_t *),
     *(*default_app) (vwm_t *);
 
   vwm_term *(*term) (vwm_t *);
@@ -208,6 +226,7 @@ typedef struct vwm_set_self {
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t),
+    (*mode_key) (vwm_t *, char),
     (*default_app) (vwm_t *, char *),
     (*user_object) (vwm_t *, void *),
     (*rline_callback) (vwm_t *, RLineCallback),

@@ -43,7 +43,7 @@ static vwm_t *VWM;
 #endif
 
 #ifndef MODE_KEY
-#define MODE_KEY  CTRL ('\\')
+#define MODE_KEY  CTRL('\\')
 #endif
 
 #ifndef CTRL
@@ -176,22 +176,6 @@ struct tmpname_t {
   char fname[PATH_MAX];
  };
 
-struct vwm_term {
-  struct termios
-    orig_mode,
-    raw_mode;
-
-  char
-    mode,
-    *name;
-
-  int
-    lines,
-    columns,
-    out_fd,
-    in_fd;
-};
-
 typedef string_t *(*ProcessChar) (vwm_frame *, string_t *, int);
 
 struct vwm_frame {
@@ -309,6 +293,8 @@ struct vwm_prop {
     *default_app,
     *shell,
     *editor;
+
+  char mode_key;
 
   int
     state,
@@ -1134,12 +1120,24 @@ private vwm_win *vwm_set_current_at (vwm_t *this, int idx) {
   return $my(current);
 }
 
+private void vwm_set_mode_key (vwm_t *this, char c) {
+  $my(mode_key) = c;
+}
+
+private char vwm_get_mode_key (vwm_t *this) {
+  return $my(mode_key);
+}
+
 private int vwm_get_lines (vwm_t *this) {
   return $my(term)->lines;
 }
 
 private int vwm_get_columns (vwm_t *this) {
   return $my(term)->columns;
+}
+
+private void *vwm_get_user_object (vwm_t *this) {
+  return $my(user_object);
 }
 
 private int vwm_get_win_idx (vwm_t *this, vwm_win *win) {
@@ -3529,8 +3527,10 @@ private pid_t frame_fork (vwm_frame *frame) {
   return frame->pid;
 
 theerror:
-  ifnot (-1 is frame->pid)
+  ifnot (-1 is frame->pid) {
     waitpid (frame->pid, NULL, 0);
+    frame->pid = -1;
+  }
 
   ifnot (-1 is fd) close (fd);
 
@@ -3772,7 +3772,7 @@ private int vwm_default_rline_callback (vwm_t *this, vwm_win *win, vwm_frame *fr
 }
 
 private int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char *input_buf) {
-  if (input_buf[0] isnot MODE_KEY) {
+  if (input_buf[0] isnot $my(mode_key)) {
     if (-1 isnot frame->fd)
       fd_write (frame->fd, input_buf, 1);
     return OK;
@@ -3787,13 +3787,14 @@ getc_again:
 
   if (-1 is c) return OK;
 
+  if (c is $my(mode_key)) {
+    input_buf[0] = $my(mode_key); input_buf[1] = '\0';
+    fd_write (frame->fd, input_buf, 1);
+    return OK;
+  }
+
   switch (c) {
     case ESCAPE_KEY:
-      break;
-
-    case MODE_KEY:
-      input_buf[0] = MODE_KEY; input_buf[1] = '\0';
-      fd_write (frame->fd, input_buf, 1);
       break;
 
     case '\t': {
@@ -3995,8 +3996,10 @@ public vwm_t *__init_vwm__ (void) {
         .editor = vwm_get_editor,
         .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
+        .mode_key = vwm_get_mode_key,
         .current_win = vwm_get_current_win,
         .default_app = vwm_get_default_app,
+        .user_object = vwm_get_user_object,
         .current_frame = vwm_get_current_frame
       },
       .set = (vwm_set_self) {
@@ -4005,6 +4008,7 @@ public vwm_t *__init_vwm__ (void) {
         .shell =  vwm_set_shell,
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
+        .mode_key = vwm_set_mode_key,
         .current_at = vwm_set_current_at,
         .default_app = vwm_set_default_app,
         .user_object = vwm_set_user_object,
@@ -4086,6 +4090,7 @@ public vwm_t *__init_vwm__ (void) {
   $my(editor) = string_new_with (EDITOR);
   $my(shell) = string_new_with (SHELL);
   $my(default_app) = string_new_with (DEFAULT_APP);
+  $my(mode_key) = MODE_KEY;
 
   $my(length) = 0;
   $my(cur_idx) = -1;
