@@ -1181,9 +1181,7 @@ private vwm_win *vwm_pop_win_at (vwm_t *this, int idx) {
 }
 
 private int **vwm_alloc_ints (int rows, int cols, int val) {
-  int **obj;
-
-  obj = Alloc (rows * sizeof (int *));
+  int **obj = Alloc (rows * sizeof (int *));
 
   for (int i = 0; i < rows; i++) {
     obj[i] = Alloc (sizeof (int *) * cols);

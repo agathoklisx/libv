@@ -12,7 +12,7 @@ Usage:
 
 ```
 
-This code has been tested and can be compiled with gcc, clang and the tcc C compilers,
+This code has been tested and can be compiled with gcc and clang C compilers,
 without a warning and while turning the DEBUG flags on.
 
 Tested with valgrind for memory leaks.
@@ -41,32 +41,92 @@ By default the `mode' key is CTRL-\.
 
 Default Key bindings:
 
-MODE_KEY-q           : quit the application  
-MODE_KEY-k           : kill the current procedure in the current frame  
-MODE_KEY-!           : open the default shell (by default zsh)  
-MODE_KEY-c           : open the default application (by default zsh)  
-MODE_KEY-[up|down|w] : switch to the upper|lower frame respectively  
-MODE_KEY-[left|right]: switch to the prev|next window respectively  
-MODE_KEY-`           : switch to the previously focused window  
-MODE_KEY-[param]+    : increase the size of the current frame (default count 1)  
-MODE_KEY-[param]-    : decrease the size of the current frame (default count 1)  
-MODE_KEY-[param]=    : set the lines (param) of the current frame  
-MODE_KEY-[param]n    : create and switch to a new window with `count' frames (default 1)    
-MODE_KEY-E|PageUp    : edit the log file (if it is has been set)  
-MODE_KEY-s           : split the window and add a new frame  
-MODE_KEY-S[!ec]      : likewise, but also fork with a shell or an editor or the default application respectively (without a param is like MODE_KEY-s)  
-MODE_KEY-d           : delete current frame  
-MODE_KEY-MODE_KEY    : return the MODE_KEY to the application  
-MODE_KEY-ESCAPE_KEY  : return with no action  
+MODKEY-q           : quit the application  
+MODKEY-k           : kill the current procedure in the current frame  
+MODKEY-!           : open the default shell (by default zsh)  
+MODKEY-c           : open the default application (by default zsh)  
+MODKEY-[up|down|w] : switch to the upper|lower frame respectively  
+MODKEY-[left|right]: switch to the prev|next window respectively  
+MODKEY-`           : switch to the previously focused window  
+MODKEY-[param]+    : increase the size of the current frame (default count 1)  
+MODKEY-[param]-    : decrease the size of the current frame (default count 1)  
+MODKEY-[param]=    : set the lines (param) of the current frame  
+MODKEY-[param]n    : create and switch to a new window with `count' frames (default 1)    
+MODKEY-E|PageUp    : edit the log file (if it is has been set)  
+MODKEY-s           : split the window and add a new frame  
+MODKEY-S[!ec]      : likewise, but also fork with a shell or an editor or the default application respectively (without a param is like MODE_KEY-s)  
+MODKEY-d           : delete current frame  
+MODKEY-MODE_KEY    : return the MODE_KEY to the application  
+MODKEY-ESCAPE_KEY  : return with no action  
 
-BUGS and missing functionality:
+BUGS and missing functionality:  
 
- - vim and htop works both in monochrome mode, plus htop output has a couple of artifacts
+ - vim and htop works both in monochrome mode, plus htop output has a couple of artifacts  
 
  - mostly un-handled the condition, when the available terminal lines, are less than the required to function properly  
    (it was developed and is being used, under a fullscreen window environment)  
 
-The initial code was derived by splitvt by Sam Lantinga, which is licensed with GPL2
+
+Application Interface.
+```C
+  // initialize the structure
+  vwm_t *this = __init_vwm__ ();
+
+  // get the terminal instance
+  vwm_term *term =  Vwm.get.term (this);
+
+  // and set it to raw mode
+  Vterm.raw_mode (term);
+
+  // init the LINES and COLUMNS based on the size of the current terminal
+  int rows, cols;
+  Vterm.init_size (term, &rows, &cols);
+
+  // and set the size
+  Vwm.set.size (this, rows, cols, 1);
+
+  // create a new window
+  vwm_win *win = Vwm.new.win (this, NULL, WinNewOpts (
+    .rows = rows,
+    .cols = cols,
+    .num_frames = 2,
+    .max_frames = 3));
+
+  // get the frame at the idx 0
+  vwm_frame *frame = Vwin.get.frame_at (win, 0);
+  // and set the argument list if it has been set
+  // if not then the frame will use the default application to fork
+  if (argc > 1)
+    Vframe.set.argv (frame, argc-1, argv + 1);
+
+  // set a log file if it is desired (this can be used as a scrollback buffer)
+  Vframe.set.log (frame, NULL, 1);
+
+  // fork (this can be omitted, as in this case forking in the main function)
+  Vframe.fork (frame);
+
+  // set also the second frame
+  frame = Vwin.get.frame_at (win, 1);
+  // another way to set an argument list to fork
+  Vframe.set.command (frame, "bash");
+
+  // create other windows if it is desired
+
+  // save screen state
+  Vterm.screen.save (term);
+  Vterm.screen.clear (term);
+
+  // and finally call main
+  int retval = Vwm.main (this);
+
+  // restore screen state
+  Vterm.screen.restore (term);
+
+  // de-initialize
+  __deinit_vwm__ (&this);
+```
+
+The initial code was derived from splitvt by Sam Lantinga, which is licensed with GPL2
 and it is included within this directory.
 
 This same license applies to this project.

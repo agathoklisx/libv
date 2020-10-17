@@ -35,16 +35,13 @@
 
 #include <libvwm.h>
 
-static vwm_t *VWM;
-
-#define Vwm    VWM->self
-#define Vframe VWM->frame
-#define Vwin   VWM->win
-#define Vterm  VWM->term
+#define Vwm    this->self
+#define Vframe this->frame
+#define Vwin   this->win
+#define Vterm  this->term
 
 int main (int argc, char **argv) {
   vwm_t *this = __init_vwm__ ();
-  VWM = this;
 
   vwm_term *term =  Vwm.get.term (this);
 
