@@ -6,9 +6,10 @@
 #include <sys/stat.h>
 #include <termios.h>
 
-#include <libv.h>
+#include <libv/libv.h>
+#include <libv/libvci.h>
 
-#define V      v->self
+#define V v->self
 
 int main (int argc, char **argv) {
   v_t *v = __init_v__ (NULL);

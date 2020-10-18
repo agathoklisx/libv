@@ -12,8 +12,9 @@
 #include <sys/stat.h>
 #include <termios.h>
 
-#include <libvwm.h>
-#include <libvtach.h>
+#include <libv/libvwm.h>
+#include <libv/libvtach.h>
+#include <libv/libvci.h>
 
 #define Vtach  vtach->self
 

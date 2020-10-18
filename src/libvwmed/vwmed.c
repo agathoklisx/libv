@@ -6,8 +6,9 @@
 #include <sys/stat.h>
 #include <termios.h>
 
-#include <libvwm.h>
-#include <libvwmed.h>
+#include <libv/libvwm.h>
+#include <libv/libvwmed.h>
+#include <libv/libvci.h>
 
 #define Vwm    this->self
 #define Vframe this->frame

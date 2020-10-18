@@ -28,6 +28,7 @@ SYSDIR    := $(shell realpath $(THISDIR)/../../../sys)
 SYSLIBDIR  = $(SYSDIR)/lib
 SYSBINDIR  = $(SYSDIR)/bin
 SYSINCDIR  = $(SYSDIR)/include
+SYSVINCDIR = $(SYSINCDIR)/libv
 SYSDATADIR = $(SYSDIR)/data
 SYSTMPDIR  = $(SYSDIR)/tmp
 
@@ -153,10 +154,10 @@ aga: shared-lib
 	@$(INSTALL) -v $(NAME) $(SYSBINDIR)
 	@$(RM) $(NAME)
 
-header: $(SYSINCDIR)/$(THIS_HEADER)
+header: clean_header $(SYSVINCDIR)/$(THIS_HEADER)
 
-$(SYSINCDIR)/$(THIS_HEADER):
-	@$(CP) $(THIS_HEADER) $(SYSINCDIR)
+$(SYSVINCDIR)/$(THIS_HEADER):
+	@$(CP) $(THIS_HEADER) $(SYSVINCDIR)
 
 clean: clean_shared clean_static clean_header clean_app
 clean_shared: clean_header
@@ -165,7 +166,7 @@ clean_static: clean_header
 	@$(TEST) ! -f $(THIS_STATICLIB) || $(RM) $(THIS_STATICLIB)
 
 clean_header:
-	@$(TEST) ! -f $(SYSINCDIR)/$(THIS_HEADER) || $(RM) $(SYSINCDIR)/$(THIS_HEADER)
+	@$(TEST) ! -f $(SYSVINCDIR)/$(THIS_HEADER) || $(RM) $(SYSVINCDIR)/$(THIS_HEADER)
 
 clean_app: clean_app_static clean_app_shared
 clean_app_shared:
@@ -176,10 +177,10 @@ clean_app_static:
 Env: makeenv checkenv
 makeenv:
 	@$(TEST) -d $(SYSDIR)     || $(MKDIR_P) $(SYSDIR)
-	@$(TEST) -d $(SYSLIBDIR)  || $(MKDIR)   $(SYSLIBDIR)
-	@$(TEST) -d $(SYSINCDIR)  || $(MKDIR)   $(SYSINCDIR)
 	@$(TEST) -d $(SYSBINDIR)  || $(MKDIR)   $(SYSBINDIR)
 	@$(TEST) -d $(SYSTMPDIR)  || $(MKDIR)   $(SYSTMPDIR)
+	@$(TEST) -d $(SYSLIBDIR)  || $(MKDIR)   $(SYSLIBDIR)
+	@$(TEST) -d $(SYSVINCDIR) || $(MKDIR_P) $(SYSVINCDIR)
 
 checkenv:
 	@$(TEST) -w $(SYSDIR)     || exit 1

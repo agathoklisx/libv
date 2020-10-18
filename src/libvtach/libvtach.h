@@ -1,30 +1,7 @@
-#include <libved.h>
-#include <libved+.h>
-
-#ifndef STR_FMT
-#define STR_FMT(fmt_, ...)                                            \
-({                                                                    \
-  char buf_[MAXLEN_LINE];                                             \
-  snprintf (buf_, MAXLEN_LINE, fmt_, __VA_ARGS__);                    \
-  buf_;                                                               \
-})
-#endif
-#ifndef debug_append
-#define debug_append(fmt, ...)                            \
-({                                                        \
-  char *file_ = STR_FMT ("/tmp/%s.debug", __func__);      \
-  FILE *fp_ = fopen (file_, "a+");                        \
-  if (fp_ isnot NULL) {                                   \
-    fprintf (fp_, (fmt), ## __VA_ARGS__);                 \
-    fclose (fp_);                                         \
-  }                                                       \
-})
-#endif
 typedef struct vtach_t vtach_t;
 typedef struct vtach_prop vtach_prop;
 
 typedef int (*PtyOnExecChild_cb) (vtach_t *, int, char **);
-typedef void (*EdToplineMethod) (ed_t *, buf_t *);
 
 typedef struct vtach_set_self {
   void (*exec_child_cb) (vtach_t *, PtyOnExecChild_cb);

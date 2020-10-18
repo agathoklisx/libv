@@ -21,7 +21,7 @@
 
 #include <errno.h>
 
-#include <libvwm.h>
+#include <libv/libvwm.h>
 #include "__libvwm.h"
 
 static vwm_t *VWM;

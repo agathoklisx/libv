@@ -10,16 +10,9 @@
 #include <termios.h>
 #include <errno.h>
 
-#include <libvwm.h>
-#include <libvwmed.h>
-
-#ifdef self
-#undef self
-#endif
-
-#ifdef $my
-#undef $my
-#endif
+#include <libv/libvwm.h>
+#include <libv/libvwmed.h>
+#include <libv/libvci.h>
 
 //#define self(__f__, ...) this->self.__f__ (this, ##__VA_ARGS__)
 #define $my(__p__) this->prop->__p__

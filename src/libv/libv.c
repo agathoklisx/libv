@@ -20,17 +20,9 @@
 #include <termios.h>
 #include <errno.h>
 
-#include <libv.h>
+#include <libv/libv.h>
+#include <libv/libvci.h>
 
-#ifdef self
-#undef self
-#endif
-
-#ifdef $my
-#undef $my
-#endif
-
-//#define self(__f__, ...) this->self.__f__ (this, ##__VA_ARGS__)
 #define $my(__p__) this->prop->__p__
 
 #define Vwm    vwm->self
@@ -38,7 +30,6 @@
 #define Vtach  vtach->self
 #define Vframe vwm->frame
 #define Vwin   vwm->win
-//#define Vterm  vwm->term
 
 struct v_prop {
   vwm_t   *vwm;
@@ -110,11 +101,9 @@ private char **set_argv (int *argc, char **argv, char **sockname, int *attach) {
 private int v_exec_child_default (vtach_t *vtach, int argc, char **argv) {
   vwm_t *vwm = Vtach.get.vwm (vtach);
 
-
   int rows = Vwm.get.lines (vwm);
   int cols = Vwm.get.columns (vwm);
 
-debug_append ("rows %d cols %d\n", rows, cols);
   vwm_win *win = Vwm.new.win (vwm, NULL, WinNewOpts (
       .rows = rows,
       .cols = cols,
@@ -122,11 +111,11 @@ debug_append ("rows %d cols %d\n", rows, cols);
       .max_frames = 2));
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   Vframe.set.argv (frame, argc, argv);
+  Vframe.set.log  (frame, NULL, 1);
   Vframe.fork (frame);
 
   int retval = Vwm.main (vwm);
 
-debug_append ("pid %d\n", getpid ());
   vwmed_t *vwmed = (vwmed_t *) Vwm.get.user_object (vwm);
   __deinit_vwmed__ (&vwmed);
   return retval;
@@ -152,12 +141,11 @@ private int v_main (v_t *this, int argc, char **argv) {
 
   vwm_t *vwm = $my(vwm);
 
-  $my(vwmed) = __init_vwmed__ ($my(vwm));
-  vwmed_t *vwmed = (vwmed_t *) Vwm.get.user_object (vwm);
+  vwmed_t *vwmed =  __init_vwmed__ ($my(vwm));
+  $my(vwmed) = vwmed;
 
-debug_append ("pid %d attach %d\n", getpid (), attach);
   ifnot (attach) {
-    Vwmed.init.ved  (vwmed);
+    Vwmed.init.ved (vwmed);
     Vtach.set.exec_child_cb ($my(vtach), v_exec_child_default);
     Vtach.pty.main ($my(vtach), argc, argv);
   }

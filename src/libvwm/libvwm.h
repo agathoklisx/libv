@@ -1,5 +1,5 @@
-#ifndef VTM_H
-#define VTM_H
+#ifndef VWM_H
+#define VWM_H
 
 #ifndef public
 #define public __attribute__((visibility ("default")))

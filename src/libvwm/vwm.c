@@ -33,7 +33,7 @@
 #include <sys/types.h>
 #include <sys/termios.h>
 
-#include <libvwm.h>
+#include <libv/libvwm.h>
 
 #define Vwm    this->self
 #define Vframe this->frame
