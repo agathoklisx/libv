@@ -882,6 +882,10 @@ private void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
   $my(first_column) = first_col;
 }
 
+private void vwm_set_term  (vwm_t *this, vwm_term *term) {
+  $my(term) = term;
+}
+
 private void vwm_set_state (vwm_t *this, int state) {
   $my(state) = state;
 }
@@ -4002,6 +4006,7 @@ public vwm_t *__init_vwm__ (void) {
       },
       .set = (vwm_set_self) {
         .size = vwm_set_size,
+        .term = vwm_set_term,
         .state = vwm_set_state,
         .shell =  vwm_set_shell,
         .editor = vwm_set_editor,

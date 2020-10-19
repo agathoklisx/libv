@@ -10,6 +10,7 @@ typedef struct vtach_set_self {
 
 typedef struct vtach_get_self {
   vwm_t *(*vwm) (vtach_t *);
+  vwm_term *(*term) (vtach_t *);
 } vtach_get_self;
 
 typedef struct vtach_init_self {

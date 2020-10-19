@@ -26,15 +26,17 @@
 #define $my(__p__) this->prop->__p__
 
 #define Vwm    vwm->self
+#define Vwin   vwm->win
+#define Vframe vwm->frame
 #define Vwmed  vwmed->self
 #define Vtach  vtach->self
-#define Vframe vwm->frame
-#define Vwin   vwm->win
 
 struct v_prop {
   vwm_t   *vwm;
   vtach_t *vtach;
   vwmed_t *vwmed;
+
+  struct termios orig_mode;
 };
 
 static const char usage[] =
@@ -139,14 +141,14 @@ private int v_main (v_t *this, int argc, char **argv) {
   if (NOTOK is Vtach.init.pty ($my(vtach), sockname))
     return 1;
 
-  vwm_t *vwm = $my(vwm);
-
-  vwmed_t *vwmed =  __init_vwmed__ ($my(vwm));
-  $my(vwmed) = vwmed;
-
   ifnot (attach) {
+    vwmed_t *vwmed =  __init_vwmed__ ($my(vwm));
+    $my(vwmed) = vwmed;
+
     Vwmed.init.ved (vwmed);
+
     Vtach.set.exec_child_cb ($my(vtach), v_exec_child_default);
+
     Vtach.pty.main ($my(vtach), argc, argv);
   }
 
@@ -154,19 +156,29 @@ private int v_main (v_t *this, int argc, char **argv) {
 }
 
 public v_t *__init_v__ (vwm_t *vwm) {
+  struct termios orig_mode;
+  if (-1 is tcgetattr (0, &orig_mode))
+    return NULL;
+
   v_t *this = Alloc (sizeof (v_t));
 
   this->prop = Alloc (sizeof (v_prop));
+
   this->self = (v_self) {
     .main = v_main
   };
 
-  if (NULL is vwm)
+  $my(orig_mode) = orig_mode;
+
+  if (NULL is vwm) {
     $my(vwm) = __init_vwm__ ();
-  else
+    vwm = $my(vwm);
+  } else
     $my(vwm) = vwm;
 
   $my(vtach) = __init_vtach__ ($my(vwm));
+  //vtach_t *vtach = $my(vtach);
+  //$my(orig_mode) = Vtach.get.term ($my(vtach))->orig_mode;
 
   return this;
 }
@@ -178,7 +190,9 @@ public void __deinit_v__ (v_t **thisp) {
 
   __deinit_vtach__ (&$my(vtach));
   __deinit_vwmed__ (&$my(vwmed));
-  __deinit_vwm__ (&$my(vwm));
+  __deinit_vwm__   (&$my(vwm));
+
+  tcsetattr (0, TCSAFLUSH, &$my(orig_mode));
 
   free (this->prop);
   free (this);

@@ -815,6 +815,10 @@ private vwm_t *vtach_get_vwm (vtach_t *this) {
   return $my(vwm);
 }
 
+private vwm_term *vtach_get_term (vtach_t *this) {
+  return $my(term);
+}
+
 public vtach_t *__init_vtach__ (vwm_t *vwm) {
   vtach_t *this = Alloc (sizeof (vtach_t));
 
@@ -825,7 +829,8 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
       .exec_child_cb = vtach_set_exec_child_cb
     },
     .get = (vtach_get_self) {
-      .vwm = vtach_get_vwm
+      .vwm = vtach_get_vwm,
+      .term = vtach_get_term
     },
     .init = (vtach_init_self) {
       .term = vtach_init_term,

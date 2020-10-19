@@ -222,6 +222,7 @@ typedef struct vwm_get_self {
 typedef struct vwm_set_self {
   void
     (*size)   (vwm_t *, int, int, int),
+    (*term)   (vwm_t *, vwm_term *),
     (*state)  (vwm_t *, int),
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
