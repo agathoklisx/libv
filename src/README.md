@@ -57,9 +57,9 @@ make clean_v
 
 Make Options:  
 
-EDITOR := editor (default vi)  
-SHELL  := shell  (default zsh)  
-DEFAULT_APP := default application (default zsh)  
-SYSDIR := system directory (default, one level up to this repository)  
-DEBUG  := turning on/off debuging (default 0)  
-CC     := C compiler (default gcc)  
+EDITOR      := set the editor (default vi)  
+SHELL       := set the shell  (default zsh)  
+DEFAULT_APP := set the default application (default zsh)  
+SYSDIR      := system directory (default, one level up to this repository)  
+DEBUG       := turning on/off debuging (default 0)  
+CC          := C compiler (default gcc)  

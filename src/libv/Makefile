@@ -84,7 +84,7 @@ ifneq ($(DEBUG), 0)
 endif
 
 #----------------------------------------------------------#
-LIBFLAGS := -I. -I$(SYSINCDIR) -L$(SYSLIBDIR) $(FLAGS) -lvwm -lvwmed -lvtach -lved -lved+
+LIBFLAGS := -I. -I$(SYSINCDIR) -L$(SYSLIBDIR) $(FLAGS) -lvwm -lvwmed -lvtach -lved+ -lved
 
 all: shared-lib app-shared
 
@@ -104,7 +104,7 @@ $(THIS_STATICLIB):
 SYSAPPSHARED = $(SYSBINDIR)/$(NAME)
 SYSAPPSTATIC = $(SYSBINDIR)/$(NAME)_static
 
-APPFLAGS += -I$(SYSINCDIR) -L$(SYSLIBDIR) -l$(THIS_LIBNAME)
+APPFLAGS += -I$(SYSINCDIR) -L$(SYSLIBDIR) -l$(THIS_LIBNAME) -lvwmed -lvtach -lvwm -lved+ -lved -llai -lm
 
 APPFLAGS += $(FLAGS)
 

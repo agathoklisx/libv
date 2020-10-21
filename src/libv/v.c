@@ -15,12 +15,17 @@
 #define V v->self
 
 int main (int argc, char **argv) {
-  v_t *v = __init_v__ (NULL);
+  v_init_opts opts = V_INIT_OPTS(
+    .argc = argc,
+    .argv = argv
+  );
+
+  v_t *v = __init_v__ (NULL, &opts);
 
   if (NULL is v)
     exit (1);
 
-  int retval = V.main (v, argc, argv);
+  int retval = V.main (v);
 
   __deinit_v__ (&v);
 

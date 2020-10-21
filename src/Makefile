@@ -37,7 +37,7 @@ DEFAULT_APP := $(SHELL)
 
 DEBUG := 0
 
-MARGS := DEBUG=$(DEBUG) SYSDIR=$(SYSDIR) API=$(API) REV=$(REV)
+MARGS := DEBUG=$(DEBUG) SYSDIR=$(SYSDIR) API=$(API) REV=$(REV) SYSDATADIR=$(SYSDATADIR) $(SYSTMPDIR)=$(SYSTMPDIR)
 VWM_MARGS += EDITOR=$(EDITOR) SHELL=$(SHELL) DEFAULT_APP=$(DEFAULT_APP)
 #----------------------------------------------------------#
 libvwm: Env
@@ -96,13 +96,13 @@ clean_libvtach_shared_all: clean_libvtach clean_vtach
 clean_libvtach_static_all: clean_libvtach_static clean_vtach_static
 clean_libvtach_all:        clean_libvtach_shared_all clean_libvtach_static_all
 #----------------------------------------------------------#
-libvwmed: Env libvwm
+libvwmed: Env libved libved-ext libvwm
 	@cd $(VWMED_DIR) && $(MAKE) $(MARGS) shared-lib
 
 vwmed: libvwmed
 	@cd $(VWMED_DIR) && $(MAKE) $(MARGS) app-shared
 
-libvwmed-static: Env
+libvwmed-static: Env libved-static libved-ext-static
 	@cd $(VWMED_DIR) && $(MAKE) $(MARGS) static-lib
 
 vwmed-static: libvwmed-static
@@ -133,7 +133,7 @@ v: libv
 libv-static: Env libvwm-static libvtach-static libvwmed-static
 	@cd $(V_DIR) && $(MAKE) $(MARGS) static-lib
 
-v-static:
+v-static: libv-static
 	@cd $(V_DIR) && $(MAKE) $(MARGS) app-static
 
 clean_libv:
@@ -157,12 +157,103 @@ all: vwm vtach vwmed v
 all-libs: libvwm libvtach libvwmed libv
 
 clean_all: clean_libvwm_all clean_libvtach_all clean_libvwmed_all clean_libv_all
+clean_shared_all: clean_libvwm_shared_all clean_libvtach_shared_all clean_libvwmed_shared_all clean_libv_shared_all
+clean_static_all: clean_libvwm_static_all clean_libvtach_static_all clean_libvwmed_static_all clean_libv_static_all
+#----------------------------------------------------------#
+
+TABWIDTH                                      := 8
+UNDO_NUM_ENTRIES                              := 100
+RLINE_HISTORY_NUM_ENTRIES                     := 20
+CLEAR_BLANKLINES                              := 1
+TAB_ON_INSERT_MODE_INDENTS                    := 0
+CARRIAGE_RETURN_ON_NORMAL_IS_LIKE_INSERT_MODE := 1
+SPACE_ON_NORMAL_IS_LIKE_INSERT_MODE           := 1
+SMALL_E_ON_NORMAL_GOES_INSERT_MODE            := 1
+BACKSPACE_ON_FIRST_IDX_REMOVE_TRAILING_SPACES := 0
+BACKSPACE_ON_NORMAL_IS_LIKE_INSERT_MODE       := 1
+BACKSPACE_ON_NORMAL_GOES_UP                   := 0
+BACKSPACE_ON_INSERT_GOES_UP_AND_JOIN          := 0
+
+LIBVED_OPTS :=
+
+LIBVED_OPTS += TABWIDTH=$(TABWIDTH)
+LIBVED_OPTS += UNDO_NUM_ENTRIES=$(UNDO_NUM_ENTRIES)
+LIBVED_OPTS += RLINE_HISTORY_NUM_ENTRIES=$(RLINE_HISTORY_NUM_ENTRIES)
+LIBVED_OPTS += CLEAR_BLANKLINES=$(CLEAR_BLANKLINES)
+LIBVED_OPTS += TAB_ON_INSERT_MODE_INDENTS=$(TAB_ON_INSERT_MODE_INDENTS)
+LIBVED_OPTS += CARRIAGE_RETURN_ON_NORMAL_IS_LIKE_INSERT_MODE=$(CARRIAGE_RETURN_ON_NORMAL_IS_LIKE_INSERT_MODE)
+LIBVED_OPTS += SPACE_ON_NORMAL_IS_LIKE_INSERT_MODE=$(SPACE_ON_NORMAL_IS_LIKE_INSERT_MODE)
+LIBVED_OPTS += SMALL_E_ON_NORMAL_GOES_INSERT_MODE=$(SMALL_E_ON_NORMAL_GOES_INSERT_MODE)
+LIBVED_OPTS += BACKSPACE_ON_FIRST_IDX_REMOVE_TRAILING_SPACES=$(BACKSPACE_ON_FIRST_IDX_REMOVE_TRAILING_SPACES)
+LIBVED_OPTS += BACKSPACE_ON_NORMAL_IS_LIKE_INSERT_MODE=$(BACKSPACE_ON_NORMAL_IS_LIKE_INSERT_MODE)
+LIBVED_OPTS += BACKSPACE_ON_NORMAL_GOES_UP=$(BACKSPACE_ON_NORMAL_GOES_UP)
+LIBVED_OPTS += BACKSPACE_ON_INSERT_GOES_UP_AND_JOIN=$(BACKSPACE_ON_INSERT_GOES_UP_AND_JOIN)
+
+HAS_PROGRAMMING_LANGUAGE := 1
+HAS_USER_EXTENSIONS      := 1
+HAS_SPELL                := 1
+HAS_JSON                 := 0
+HAS_TCC                  := 0
+HAS_CURL                 := 0
+HAS_LOCAL_EXTENSIONS     := 0
+
+LIBVED_EXT_OPTS :=
+
+LIBVED_EXT_OPTS += HAS_PROGRAMMING_LANGUAGE=$(HAS_PROGRAMMING_LANGUAGE)
+LIBVED_EXT_OPTS += HAS_USER_EXTENSIONS=$(HAS_USER_EXTENSIONS)
+LIBVED_EXT_OPTS += HAS_SPELL=$(HAS_SPELL)
+LIBVED_EXT_OPTS += HAS_JSON=$(HAS_JSON)
+LIBVED_EXT_OPTS += HAS_TCC=$(HAS_TCC)
+LIBVED_EXT_OPTS += HAS_CURL=$(HAS_CURL)
+LIBVED_EXT_OPTS += HAS_LOCAL_EXTENSIONS=$(HAS_LOCAL_EXTENSIONS)
+
+PROGRAMMING_LANGUAGE_SHARED_FLAGS :=
+PROGRAMMING_LANGUAGE_STATIC_FLAGS := "ENABLE_HTTP=0"
+
+ifneq ($(HAS_PROGRAMMING_LANGUAGE), 0)
+  ifeq ($(HAS_CURL), 0)
+    PROGRAMMING_LANGUAGE_SHARED_FLAGS += "ENABLE_HTTP=0"
+  else
+    PROGRAMMING_LANGUAGE_SHARED_FLAGS += "ENABLE_HTTP=1"
+  endif
+endif
+
+libved:
+	@cd modules/libved/src && $(MAKE) $(MARGS) $(LIBVED_OPTS) shared
+
+libved-static:
+	@cd modules/libved/src && $(MAKE) $(MARGS) $(LIBVED_OPTS) static
+
+libved-ext:
+	@cd modules/libved/src && $(MAKE) $(MARGS) $(LIBVED_EXT_OPTS) shared-libext
+
+libved-ext-static:
+	@cd modules/libved/src && $(MAKE) $(MARGS) $(LIBVED_EXT_OPTS) static-libext
+
+pl-shared-library:
+	@cd modul_s/libved/src && $(MAKE) $(MARGS) $(PROGRAMMING_LANGUAGE_SHARED_FLAGS) pl-shared-library
+
+clean_libved:
+	@cd modules/libved/src && $(MAKE) $(MARGS) clean_shared
+
+clean_libved-ext:
+	@cd modules/libved/src && $(MAKE) $(MARGS) clean_libext
+
+clean_pl:
+	@cd modules/libved/src && $(MAKE) $(MARGS) pl_clean
+
+clean_pl_shared:
+	@cd modules/libved/src && $(MAKE) $(MARGS) pl_clean_shared
+
+clean_pl_static:
+	@cd modules/libved/src && $(MAKE) $(MARGS) pl_clean_static
 
 debug:
 	@echo $(SYSDIR)
 	@echo $(VWM_DIR)
 	@echo $(VTACH_DIR)
 	@echo $(MARGS)
+	@echo $(LIBVED_OPTS)
 
 Env: makeenv checkenv
 makeenv:

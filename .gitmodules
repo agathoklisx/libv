@@ -1,0 +1,3 @@
+[submodule "src/modules/libved"]
+	path = src/modules/libved
+	url = /home/aga/agathoklisx/libved

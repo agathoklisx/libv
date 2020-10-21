@@ -150,6 +150,17 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
         .draw = 1,
         .commands = commands));
     goto theend;
+  } else if (Cstring.eq (com->bytes, "set")) {
+    string_t *log_file = Rline.get.anytype_arg (rl, "log-file");
+    if (NULL is log_file)
+      goto theend;
+    int set_log = atoi (log_file->bytes);
+    if (set_log)
+      Vframe.set.log (Vwm.get.current_frame ($my(vwm)), NULL, 1);
+    else
+      Vframe.release_log (Vwm.get.current_frame ($my(vwm)));
+
+    goto theend;
   }
 
 theend:
@@ -230,12 +241,11 @@ private vwm_t *vwmed_get_vwm (vwmed_t *this) {
   return $my(vwm);
 }
 
-private int vwmed_init_ved (vwmed_t *this) {
-  if (NULL is __init_this__ ())
-    return NOTOK;
+private E_T *vwmed_get_e (vwmed_t *this) {
+  return $my(__E__);
+}
 
-  $my(__This__) = __This__;
-  $my(__E__)    = $my(__This__)->__E__;
+private int vwmed_init_ved (vwmed_t *this) {
 
   E.set.at_init_cb ($my(__E__), __init_ext__);
   E.set.at_exit_cb ($my(__E__), __deinit_ext__);
@@ -262,6 +272,9 @@ private int vwmed_init_ved (vwmed_t *this) {
   Ed.append.command_arg ($my(ed), "win_new", "--focus=", 8);
   Ed.append.command_arg ($my(ed), "win_new", "--command={", 11);
   Ed.append.command_arg ($my(ed), "win_new", "--num-frames=", 13);
+
+  Ed.append.rline_command ($my(ed), "set", 0, 0);
+  Ed.append.command_arg ($my(ed), "set", "--log-file=", 11);
 
   Ed.append.rline_command ($my(ed), "ed", 0, 0);
   if (Cstring.eq_n ("veda", Vwm.get.editor ($my(vwm)), 4)) {
@@ -324,13 +337,17 @@ private vwm_term *vwmed_init_term (vwmed_t *this, int *rows, int *cols) {
 }
 
 public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
+  if (NULL is __init_this__ ())
+    return NULL;
+
   vwmed_t *this = Alloc (sizeof (vwmed_t));
 
   this->prop = Alloc (sizeof (vwmed_prop));
 
   this->self = (vwmed_self) {
     .get = (vwmed_get_self) {
-      .vwm = vwmed_get_vwm
+      .vwm = vwmed_get_vwm,
+      .e = vwmed_get_e
     },
     .init = (vwmed_init_self) {
       .ved = vwmed_init_ved,
@@ -338,12 +355,15 @@ public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
     }
   };
 
+  $my(__This__) = __This__;
+  $my(__E__)    = $my(__This__)->__E__;
+
   if (NULL is vwm)
     $my(vwm) = __init_vwm__ ();
   else
     $my(vwm) = vwm;
 
-  Vwm.set.user_object ($my(vwm), (void *) this);
+  Vwm.set.user_object_at ($my(vwm), (void *) this, VED_OBJECT);
 
   return this;
 }

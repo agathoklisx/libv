@@ -32,14 +32,7 @@
 #define Vframe $my(vwm)->frame
 #define Vterm  $my(vwm)->term
 
-enum
-{
-  MSG_PUSH  = 0,
-  MSG_ATTACH  = 1,
-  MSG_DETACH  = 2,
-  MSG_WINCH  = 3,
-  MSG_REDRAW  = 4,
-};
+#define SOCKET_MAX_DATA_SIZE (sizeof (struct winsize))
 
 enum
 {
@@ -53,7 +46,7 @@ struct packet {
   unsigned char type;
   unsigned char len;
   union  {
-    unsigned char buf[sizeof (struct winsize)];
+    unsigned char buf[SOCKET_MAX_DATA_SIZE];
     struct winsize ws;
   } u;
 };
@@ -106,29 +99,29 @@ private int fd_set_nonblocking (int fd) {
   return OK;
 }
 
-private int create_socket (char *sockname) {
-  int s;
+private int vtach_sock_create (vtach_t *this, char *sockname) {
+  (void) this;
   struct sockaddr_un sockun;
 
   if (bytelen (sockname) > sizeof (sockun.sun_path) - 1) {
     errno = ENAMETOOLONG;
-    return -1;
+    return NOTOK;
   }
 
-  s = socket (PF_UNIX, SOCK_STREAM, 0);
-  if (s < 0)
-    return -1;
+  int s = socket (PF_UNIX, SOCK_STREAM, 0);
+  if (s is -1)
+    return NOTOK;
 
   sockun.sun_family = AF_UNIX;
   strcpy (sockun.sun_path, sockname);
-  if (bind (s, (struct sockaddr*)&sockun, sizeof (sockun)) < 0) {
+  if (bind (s, (struct sockaddr*)&sockun, sizeof (sockun)) is -1) {
     close (s);
-    return -1;
+    return NOTOK;
   }
 
-  if (listen (s, 128) < 0) {
+  if (listen (s, 128) is -1) {
     close (s);
-    return -1;
+    return NOTOK;
   }
 
   if (fd_set_nonblocking (s) < 0) {
@@ -136,42 +129,60 @@ private int create_socket (char *sockname) {
     return -1;
   }
 
-  if (chmod (sockname, 0600) < 0) {
+  if (chmod (sockname, 0600) is -1) {
     close (s);
-    return -1;
+    return NOTOK;
   }
 
   return s;
 }
 
-private int connect_socket (char *sockname) {
+private int vtach_sock_connect (vtach_t *this, char *sockname) {
+  (void) this;
+
   struct sockaddr_un sockun;
   int s = socket (PF_UNIX, SOCK_STREAM, 0);
-
-  if (s < 0)
-    return -1;
+  if (s is -1)
+    return NOTOK;
 
   sockun.sun_family = AF_UNIX;
   strcpy (sockun.sun_path, sockname);
 
-  if (connect (s, (struct sockaddr*)&sockun, sizeof (sockun)) < 0) {
+  if (connect (s, (struct sockaddr*)&sockun, sizeof (sockun)) is -1) {
     close (s);
-
     /* ECONNREFUSED is also returned for regular files, so make
     ** sure we are trying to connect to a socket. */
     if (errno is ECONNREFUSED) {
       struct stat st;
 
-      if (stat (sockname, &st) < 0)
-        return -1;
-      else if (!S_ISSOCK(st.st_mode) or S_ISREG(st.st_mode))
+      if (stat (sockname, &st) is -1)
+        return NOTOK;
+
+      if (0 is S_ISSOCK(st.st_mode) or S_ISREG(st.st_mode))
         errno = ENOTSOCK;
     }
 
-    return -1;
+    return NOTOK;
   }
 
   return s;
+}
+
+private int vtach_sock_send_data (vtach_t *this, int s, char *data, size_t len, int type) {
+  (void) this;
+  if (NULL is data) return NOTOK;
+
+  if (len > SOCKET_MAX_DATA_SIZE) return NOTOK;
+
+  struct packet pkt;
+  pkt.type = type;
+  pkt.len = len;
+  for (int i = 0; i < pkt.len; i++) pkt.u.buf[i] = data[i];
+
+  if (-1 is write (s, &pkt, sizeof(struct packet)))
+    return NOTOK;
+
+  return OK;
 }
 
 private void update_socket_modes (char *sockname, int exec) {
@@ -213,7 +224,7 @@ private void tty_sigwinch_handler (int sig) {
   win_changed = 1;
 }
 
-private char *ustring_character (utf8 c, char *buf, int *len) {
+static char *ustring_character (utf8 c, char *buf, int *len) {
   *len = 1;
   if (c < 0x80) {
     buf[0] = (char) c;
@@ -264,7 +275,7 @@ private int tty_process_kbd (vtach_t *this, int s, struct packet *pkt) {
     utf8 c = Vwm.getkey ($my(vwm), 0);
 
     if (c is $my(detach_char)) {
-      printf (EOS "\r\n[detached]\r\n");
+      fprintf (stdout, EOS "\r\n[detached]\r\n");
       return 1;
     }
 
@@ -281,15 +292,14 @@ private int tty_process_kbd (vtach_t *this, int s, struct packet *pkt) {
   else if (pkt->u.buf[0] is '\f')
     win_changed = 1;
 
-  /* Push it out */
   write (s, pkt, sizeof (struct packet));
   return 0;
 }
 
 private int vtach_tty_main (vtach_t *this) {
-  int s = connect_socket ($my(sockname));
+  int s = self(sock.connect, $my(sockname));
 
-  if (s < 0) {
+  if (s is NOTOK) {
     fprintf (stderr, "%s: %s\n", $my(sockname), strerror (errno));
     return 1;
   }
@@ -612,9 +622,9 @@ private void pty_process (vtach_t *this, int s, int argc, char **argv, int statu
       dup2 (statusfd, 1);
 
     if (errno is ENOENT)
-      printf ("Could not find a pty.\n");
+      fprintf (stderr, "Could not find a pty.\n");
     else
-      printf ("init_pty: %s\n", strerror (errno));
+      fprintf (stderr, "init_pty: %s\n", strerror (errno));
 
     unlink ($my(sockname));
     exit (1);
@@ -706,11 +716,11 @@ private void pty_process (vtach_t *this, int s, int argc, char **argv, int statu
 }
 
 private int vtach_pty_main (vtach_t *this, int argc, char **argv) {
-  int s = create_socket ($my(sockname));
+  int s = self(sock.create, $my(sockname));
 
-  if (s < 0) {
-    printf ("%s: %s\n", $my(sockname), strerror (errno));
-    return -1;
+  if (s is NOTOK) {
+    fprintf (stderr, "a%s: %s\n", $my(sockname), strerror (errno));
+    return NOTOK;
   }
 
   fcntl (s, F_SETFD, FD_CLOEXEC);
@@ -734,7 +744,7 @@ private int vtach_pty_main (vtach_t *this, int argc, char **argv) {
   pid_t pid = fork ();
 
   if (pid < 0) {
-    printf ("fork: %s\n", strerror (errno));
+    fprintf (stderr, "fork: %s\n", strerror (errno));
     unlink ($my(sockname));
     return -1;
   } else if (pid is 0) {
@@ -819,6 +829,11 @@ private vwm_term *vtach_get_term (vtach_t *this) {
   return $my(term);
 }
 
+private size_t vtach_get_sock_max_data_size (vtach_t *this) {
+  (void) this;
+  return SOCKET_MAX_DATA_SIZE;
+}
+
 public vtach_t *__init_vtach__ (vwm_t *vwm) {
   vtach_t *this = Alloc (sizeof (vtach_t));
 
@@ -830,11 +845,17 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
     },
     .get = (vtach_get_self) {
       .vwm = vtach_get_vwm,
-      .term = vtach_get_term
+      .term = vtach_get_term,
+      .sock_max_data_size = vtach_get_sock_max_data_size
     },
     .init = (vtach_init_self) {
       .term = vtach_init_term,
       .pty = vtach_init_pty
+    },
+    .sock = (vtach_sock_self) {
+      .create = vtach_sock_create,
+      .connect = vtach_sock_connect,
+      .send_data = vtach_sock_send_data
     },
     .pty = (vtach_pty_self) {
       .main = vtach_pty_main
@@ -852,7 +873,7 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
   $my(term) = Vwm.get.term ($my(vwm));
   $my(mode_key) = Vwm.get.mode_key ($my(vwm));
 
-  Vwm.set.user_object ($my(vwm), (void *) this);
+  Vwm.set.user_object_at ($my(vwm), (void *) this, VTACH_OBJECT);
 
   return this;
 }

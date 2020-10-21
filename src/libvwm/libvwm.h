@@ -29,6 +29,11 @@ typedef signed int utf8;
 #define MAXLEN_LINE 4096
 #endif
 
+#define VED_OBJECT   0
+#define VTACH_OBJECT 1
+#define V_OBJECT     2
+#define U_OBJECT     3
+
 #define DOWN_POS    2
 #define NEXT_POS    1
 #define LAST_POS    0
@@ -140,6 +145,7 @@ typedef struct vwm_frame_self {
     (*clear) (vwm_frame *),
     (*on_resize) (vwm_frame *, int, int),
     (*release_argv) (vwm_frame *),
+    (*release_log) (vwm_frame *),
     (*process_output) (vwm_frame *, char *, int);
 
   int
@@ -201,7 +207,7 @@ typedef struct vwm_win_self {
 
 typedef struct vwm_get_self {
   void
-    *(*user_object) (vwm_t *);
+    *(*user_object_at) (vwm_t *, int);
   int
     (*state) (vwm_t *),
     (*lines) (vwm_t *),
@@ -229,7 +235,7 @@ typedef struct vwm_set_self {
     (*tmpdir) (vwm_t *, char *, size_t),
     (*mode_key) (vwm_t *, char),
     (*default_app) (vwm_t *, char *),
-    (*user_object) (vwm_t *, void *),
+    (*user_object_at) (vwm_t *, void *, int),
     (*rline_callback) (vwm_t *, RLineCallback),
     (*on_tab_callback) (vwm_t *, OnTabCallback),
     (*edit_file_callback) (vwm_t *, EditFileCallback);

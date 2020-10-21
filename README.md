@@ -41,5 +41,5 @@ make app-static
   
 ```
   
-In the src directory there is a generic Makefile that builds all the targers.  
+In the src directory there is a generic Makefile that builds all the targets.  
 Refer to src/README.md for details.
