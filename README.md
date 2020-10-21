@@ -17,7 +17,7 @@ Components:
   
   - libv:  
     This is a library that link against the above libraries. It provides  
-    the v utility, that accepts the same arguments with vtach.  
+    the v utility.
   
 Usage:
   
@@ -42,4 +42,14 @@ make app-static
 ```
   
 In the src directory there is a generic Makefile that builds all the targets.  
-Refer to src/README.md for details.
+```sh
+# this builds the v utility
+
+make v
+
+# likewise, but this builds the static target
+
+make v-static
+```
+Refer to src/README.md or to src/Makefile for details.
+

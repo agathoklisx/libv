@@ -14,6 +14,7 @@ typedef struct v_init_opts {
 
   int
     argc,
+    exit,
     force,
     attach,
     send_data,
@@ -27,6 +28,7 @@ typedef struct v_init_opts {
   .sockname = NULL,      \
   .argv = NULL,          \
   .argc = 0,             \
+  .exit = 0,             \
   .force = 0,            \
   .attach = 0,           \
   .send_data = 0,        \

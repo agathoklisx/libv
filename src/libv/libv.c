@@ -52,6 +52,7 @@ static const char usage[] =
   "    -a, --attach        attach to the specified socket\n"
   "    -f, --force         connect to socket, even when socket exists\n"
   "        --send          send data to the specified socket from standard input\n"
+  "        --exit          create the socket, fork and then exit\n"
   "\n";
 
 private int v_exec_child_default (vtach_t *vtach, int argc, char **argv) {
@@ -175,6 +176,7 @@ private int v_main (v_t *this) {
   int argc = opts->argc;
   int force = opts->force;
   int send_data = opts->send_data;
+  int exit_this = opts->exit;
   char *sockname = opts->sockname;
   char **argv = opts->argv;
   char *as = opts->as;
@@ -189,6 +191,7 @@ private int v_main (v_t *this) {
       OPT_BOOLEAN('a', "attach", &attach, "attach to the specified socket", NULL, 0, 0),
       OPT_BOOLEAN(0, "force", &force, "connect to socket, even when socket exists", NULL, 0, 0),
       OPT_BOOLEAN(0, "send", &send_data, "send data to the specified socket", NULL, 0, 0),
+      OPT_BOOLEAN(0, "exit", &exit_this, "create the socket, fork and then exit", NULL, 0, 0),
       OPT_END()
     };
 
@@ -259,6 +262,9 @@ private int v_main (v_t *this) {
     Vtach.pty.main ($my(vtach), argc, argv);
   }
 
+  if (exit_this)
+    return 0;
+
   return Vtach.tty.main ($my(vtach));
 }
 
@@ -311,7 +317,6 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
 
     if (-1 isnot tcgetattr ($my(input_fd), &orig_mode)) // dont exit yes, as we might be at the end of a pipe
       $my(orig_mode) = orig_mode;
-
   }
 
   Vwm.set.user_object_at (vwm, this, V_OBJECT);
