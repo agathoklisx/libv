@@ -23,8 +23,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libcurl4-openssl-dev
           git submodule update --init
+          SYSDIR=`pwd`/sys
           cd src
-          make SHELL=bash DEBUG=0 SYSDIR=.. v
+          make SHELL=bash DEBUG=0 SYSDIR=$SYSDIR v
           cd ..
           rm -rf sys
   macos:
@@ -39,7 +40,8 @@ jobs:
       - name: Macos
         run: |
           git submodule update --init
+          SYSDIR=`pwd`/sys
           cd src
-          make SHELL=bash DEBUG=0 SYSDIR=.. v
+          make SHELL=bash DEBUG=0 SYSDIR=$SYSDIR v
           cd ..
           rm -rf sys
