@@ -32,11 +32,12 @@ Invocation and Options:
   v [options] [command] [command arguments]
   
   Options:
-     -s, --sockname=     set the socket name [required if --as= missing]\n"
-         --as=           create the socket name in an inner environment [required if -s is missing]\n"
-     -a, --attach        attach to the specified socket\n"
-     -f, --force         connect to socket, even when socket exists\n"
+     -s, --sockname=     set the socket name [required if --as= missing]
+         --as=           create the socket name in an inner environment [required if -s is missing]
+     -a, --attach        attach to the specified socket
+     -f, --force         connect to socket, even when socket exists
          --send          send data to the specified socket from standard input and then exit
+         --exit          create the socket, fork and then exit
 ```
   
 Refer to the sources for inner details and probably a more updated help message  

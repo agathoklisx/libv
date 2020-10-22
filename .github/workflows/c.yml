@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  linux:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-16.04, ubuntu-20.04]
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Linux
+        run: |
+          cd src/modules/libved
+          git checkout master
+          git pull
+          git submodule update --remote
+          cd ../../..
+          cd src && make DEBUG=1 SYSDIR=.. v
+          cd ..
+          rm -rf sys
+  macos:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macOS-latest]
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Macos
+        run: |
+          cd src/modules/libved
+          git checkout master
+          git pull
+          git submodule update --remote
+          cd ../../..
+          cd src && make DEBUG=1 SYSDIR=.. v
+          cd ..
+          rm -rf sys
