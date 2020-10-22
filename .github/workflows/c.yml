@@ -20,7 +20,10 @@ jobs:
       - uses: actions/checkout@v2
       - name: Linux
         run: |
-          cd src && make SHELL=bash DEBUG=0 SYSDIR=.. v
+          cd src/modules
+          git submodule update --init
+          cd ..
+          make SHELL=bash DEBUG=0 SYSDIR=.. v
           cd ..
           rm -rf sys
   macos:
@@ -34,6 +37,9 @@ jobs:
       - uses: actions/checkout@v2
       - name: Macos
         run: |
-          cd src && make SHELL=bash DEBUG=0 SYSDIR=.. v
+          cd src/modules
+          git submodule update --init
+          cd ..
+          make SHELL=bash DEBUG=0 SYSDIR=.. v
           cd ..
           rm -rf sys
