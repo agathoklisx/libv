@@ -14,15 +14,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, ubuntu-16.04, ubuntu-20.04]
+        os: [ubuntu-latest, ubuntu-20.04]
 
     steps:
       - uses: actions/checkout@v2
       - name: Linux
         run: |
-          cd src/modules
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
           git submodule update --init
-          cd ..
+          cd src
           make SHELL=bash DEBUG=0 SYSDIR=.. v
           cd ..
           rm -rf sys
@@ -37,9 +38,8 @@ jobs:
       - uses: actions/checkout@v2
       - name: Macos
         run: |
-          cd src/modules
           git submodule update --init
-          cd ..
+          cd src
           make SHELL=bash DEBUG=0 SYSDIR=.. v
           cd ..
           rm -rf sys

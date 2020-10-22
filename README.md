@@ -22,9 +22,13 @@ Components:
 Usage:
  
 ```sh
-# clone the repository
+# clone the repository and the submodule
 
 git clone --recurse-submodules https://github.com/agathoklisx/libv
+
+# if you've already cloned the sources issue to get the submodule:
+
+git submodule update --init
 ```
 
 In every library directory there is a specific Makefile to build the targets.
@@ -50,12 +54,22 @@ In the src directory there is a generic Makefile that builds all the targets.
 ```sh
 # basic instructions
 
-#this builds the v utility
+# this builds all the shared libraries and the v utility
 
 make v
 
-# likewise, but this builds the static target
+# likewise, but this builds the static targets
 
 make v-static
 ```
 Refer to src/README.md or to src/Makefile for details.
+
+In every subdirectory there is also a README.md.
+
+```sh
+# for a short help issue:
+
+v --help
+```
+
+Compiles on Linux and using gcc and clang C compilers.
