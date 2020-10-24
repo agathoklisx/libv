@@ -72,4 +72,40 @@ In every subdirectory there is also a README.md.
 v --help
 ```
 
-Compiles on Linux and using gcc and clang C compilers.
+Default keybindings of the v utility:  
+
+By default the `MODKEY' key is CTRL-\.  
+
+This it can be set with:  
+  
+  Vwm.set.mode_key (vwm_t *, char);  
+
+  MODKEY-q           : quit the application  
+  MODKEY-K           : kill the current procedure in the current frame  
+  MODKEY-!           : open the default shell (by default zsh)  
+  MODKEY-c           : open the default application (by default zsh)  
+  MODKEY-[up|down|w] : switch to the upper|lower frame respectively  
+  MODKEY-[j|k]       : likewise  
+  MODKEY-[left|right]: switch to the prev|next window respectively  
+  MODKEY-[h|l]       : likewise  
+  MODKEY-`           : switch to the previously focused window  
+  MODKEY-[param]+    : increase the size of the current frame (default count 1)  
+  MODKEY-[param]-    : decrease the size of the current frame (default count 1)  
+  MODKEY-[param]=    : set the lines (param) of the current frame  
+  MODKEY-[param]n    : create and switch to a new window with `count' frames (default 1)    
+  MODKEY-E|PageUp    : edit the log file (if it is has been set)  
+  MODKEY-s           : split the window and add a new frame  
+  MODKEY-S[!ec]      : likewise, but also fork with a shell or an editor or the default application respectively (without a param is like MODE_KEY-s)  
+  MODKEY-d           : delete current frame  
+  MODKEY-CTRL(l)     : redraw current window  
+  MODKEY-MODE_KEY    : return the MODE_KEY to the application  
+  MODKEY-ESCAPE_KEY  : return with no action  
+  MODKEY-CTRL(d)     : detach application  
+  MODKEY-TAB         : command completion with the default parameters  
+  MODKEY-:           : command completion and readline  
+
+Status:  
+The environment is complex enough and the code is at early stage (was
+initialized at the mid days of the September of 2020). So naturally is not stable.  
+
+Compiles without warnings while turning on -Wall and -Wextra, on Linux by gcc and clang C compilers.

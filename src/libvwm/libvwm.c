@@ -50,26 +50,16 @@ static vwm_t *VWM;
 #define CTRL(X) (X & 037)
 #endif
 
-#ifndef DIR_SEP
-#define DIR_SEP '/'
-#endif
-
-#ifndef IS_DIRSEP
-#define IS_DIRSEP(c_) (c_ == DIR_SEP)
-#endif
-
 #ifndef PATH_MAX
 #define PATH_MAX 4096  /* bytes in a path name */
 #endif
 
-#define NUM_OBJECTS 4
 #define MIN_ROWS 2
 #define MAX_CHAR_LEN 4
 #define MAX_TTYNAME 1024
 #define MAX_PARAMS  12
-#define MAX_SEQ_LEN 16
+#define MAX_SEQ_LEN 32
 
-#define BUFSIZE     4096
 #define TABWIDTH    8
 
 #define ISDIGIT(c_)     ('0' <= (c_) && (c_) <= '9')
@@ -195,6 +185,7 @@ struct vwm_frame {
     fd,
     argc,
     logfd,
+    state,
     status,
     mb_len,
     mb_curlen,
@@ -317,7 +308,7 @@ struct vwm_prop {
     cur_idx,
     length;
 
-  void *user_object[NUM_OBJECTS];
+  void *objects[NUM_OBJECTS];
 
   OnTabCallback on_tab_callback;
   RLineCallback rline_callback;
@@ -388,15 +379,6 @@ static int dir_is_directory (const char *name) {
     return 0;
 
   return S_ISDIR(st.st_mode);
-}
-
-static char *path_basename (const char *name) {
-  char *p = strchr (name, 0);
-
-  while (p > name and !IS_DIRSEP (p[-1]))
-    --p;
-
-  return p;
 }
 
 #define CONTINUE_ON_EXPECTED_ERRNO(fd__)          \
@@ -911,9 +893,9 @@ static void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
   $my(on_tab_callback) = cb;
 }
 
-static void vwm_set_user_object_at (vwm_t *this, void *object, int idx) {
+static void vwm_set_object_at (vwm_t *this, void *object, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return;
-  $my(user_object)[idx] = object;
+  $my(objects)[idx] = object;
 }
 
 static void vwm_set_rline_callback (vwm_t *this, RLineCallback cb) {
@@ -1142,9 +1124,13 @@ static int vwm_get_columns (vwm_t *this) {
   return $my(term)->columns;
 }
 
-static void *vwm_get_user_object_at (vwm_t *this, int idx) {
+static void *vwm_get_object_at (vwm_t *this, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return NULL;
-  return $my(user_object);
+  return $my(objects)[idx];
+}
+
+static int vwm_get_num_wins (vwm_t *this) {
+  return $my(length);
 }
 
 static int vwm_get_win_idx (vwm_t *this, vwm_win *win) {
@@ -2643,7 +2629,7 @@ static pid_t frame_get_pid (vwm_frame *this) {
   return this->pid;
 }
 
-static void frame_clear (vwm_frame *this) {
+static void frame_clear (vwm_frame *this, int state) {
   if (NULL is this) return;
 
   string_t *render = this->render;
@@ -2652,14 +2638,24 @@ static void frame_clear (vwm_frame *this) {
   vt_goto (render, this->first_row, 1);
 
   for (int i = 0; i < this->num_rows; i++) {
-    for (int j = 0; j < this->num_cols; j++)
+    for (int j = 0; j < this->num_cols; j++) {
+      if (state & VFRAME_CLEAR_VIDEO_MEM) {
+        this->videomem[i][j] = ' ';
+        this->colors[i][j] = COLOR_FG_NORMAL;
+      }
+
       string_append_byte (render, ' ');
+    }
 
     string_append (render, "\r\n");
   }
 
   // clear the last newline, otherwise it scrolls one line more
   string_clear_at (render, -1); // this is visible when there is one frame
+
+  if (state & VFRAME_CLEAR_LOG)
+    if (this->logfd isnot -1)
+      ftruncate (this->logfd, 0);
 
   vt_write (render->bytes, stdout);
 }
@@ -2670,7 +2666,11 @@ static int frame_check_pid (vwm_frame *this) {
   ifnot (0 is waitpid (this->pid, &this->status, WNOHANG)) {
     this->pid = -1;
     this->fd = -1;
-    self(clear);
+    int state = (VFRAME_CLEAR_VIDEO_MEM|
+      (this->logfd isnot -1 ?
+        (this->remove_log ? VFRAME_CLEAR_LOG : 0) :
+        0));
+    self(clear, state);
     return 0;
   }
 
@@ -2680,7 +2680,11 @@ static int frame_check_pid (vwm_frame *this) {
 static int frame_kill_proc (vwm_frame *this) {
   if (this is NULL or this->pid is -1) return -1;
 
-  self(clear);
+  int state = (VFRAME_CLEAR_VIDEO_MEM|
+    (this->logfd isnot -1 ?
+      (this->remove_log ? VFRAME_CLEAR_LOG : 0) :
+      0));
+  self(clear, state);
 
   kill (this->pid, SIGHUP);
   waitpid (this->pid, NULL, 0);
@@ -2689,8 +2693,10 @@ static int frame_kill_proc (vwm_frame *this) {
   return 0;
 }
 
-static void frame_set_process_output (vwm_frame *this, ProcessOutput cb) {
+static ProcessOutput frame_set_process_output (vwm_frame *this, ProcessOutput cb) {
+  ProcessOutput prev = this->process_output;
   this->process_output = cb;
+  return prev;
 }
 
 static void frame_set_unimplemented (vwm_frame *this, Unimplemented cb) {
@@ -2746,6 +2752,7 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   frame->self = this->frame;
 
   frame->pid = -1;
+  frame->fd = -1;
   frame->argc = 0;
   frame->argv = NULL;
   frame->logfd = -1;
@@ -2758,6 +2765,7 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   frame->mb_buf[0] = '\0';
   frame->mb_curlen = frame->mb_len = frame->mb_code = 0;
   frame->render = string_new (2048);
+  frame->state = 0;
 
   frame->process_output = frame_process_output;
 
@@ -3201,9 +3209,9 @@ static void win_frame_set_size (vwm_win *this, vwm_frame *frame, int param, int 
     win_frame_decrease_size (this, frame, frame->num_rows - param, draw);
 }
 
-static void win_frame_change (vwm_win *this, vwm_frame *frame, int dir, int draw) {
+static vwm_frame *win_frame_change (vwm_win *this, vwm_frame *frame, int dir, int draw) {
   if (NULL is frame->next and NULL is frame->prev)
-    return;
+    return frame;
 
   int idx = -1;
 
@@ -3226,6 +3234,8 @@ static void win_frame_change (vwm_win *this, vwm_frame *frame, int dir, int draw
   if (OK is self(set.separators, draw))
     if (draw is DONOT_DRAW)
       this->draw_separators = 1;
+
+  return this->current;
 }
 
 static void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
@@ -3302,7 +3312,7 @@ static int frame_edit_log (vwm_frame *frame) {
     write (frame->logfd, buf, len);
   }
 
-  $my(edit_file_callback) (this, frame->logfile, $my(user_object)[VED_OBJECT]);
+  $my(edit_file_callback) (this, frame->logfile, $my(objects)[VWMED_OBJECT]);
 
   vt_video_add_log_lines (frame);
   Vwin.draw (win);
@@ -3321,6 +3331,10 @@ static char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
 
 static int win_get_num_frames (vwm_win *this) {
   return this->length;
+}
+
+static vwm_frame *win_get_current_frame (vwm_win *this) {
+  return this->current;
 }
 
 static vwm_frame *win_get_frame_at (vwm_win *this, int idx) {
@@ -3469,6 +3483,26 @@ theend:
   return status;
 }
 
+static int frame_create_fd (vwm_frame *frame) {
+  if (frame->fd isnot -1) return frame->fd;
+
+  int fd = -1;
+  if (-1 is (fd = posix_openpt (O_RDWR|O_NOCTTY|O_CLOEXEC))) goto theerror;
+  if (-1 is grantpt (fd)) goto theerror;
+  if (-1 is unlockpt (fd)) goto theerror;
+  char *name = ptsname (fd); ifnull (name) goto theerror;
+  cstring_cp (frame->tty_name, MAX_TTYNAME, name, MAX_TTYNAME - 1);
+
+  frame->fd = fd;
+  return fd;
+
+theerror:
+  if (fd isnot -1)
+    close (fd);
+
+  return -1;
+}
+
 static pid_t frame_fork (vwm_frame *frame) {
   if (frame->pid isnot -1)
     return frame->pid;
@@ -3480,13 +3514,18 @@ static pid_t frame_fork (vwm_frame *frame) {
   signal (SIGWINCH, SIG_IGN);
 
   frame->pid = -1;
-  frame->fd = -1;
-  int fd =  -1;
-  if (-1 is (fd = posix_openpt (O_RDWR|O_NOCTTY|O_CLOEXEC))) goto theerror;
-  if (-1 is grantpt (fd)) goto theerror;
-  if (-1 is unlockpt (fd)) goto theerror;
-  char *name = ptsname (fd); ifnull (name) goto theerror;
-  cstring_cp (frame->tty_name, MAX_TTYNAME, name, MAX_TTYNAME - 1);
+
+  int fd = -1;
+
+  if (frame->fd is -1) {
+    if (-1 is (fd = posix_openpt (O_RDWR|O_NOCTTY|O_CLOEXEC))) goto theerror;
+    if (-1 is grantpt (fd)) goto theerror;
+    if (-1 is unlockpt (fd)) goto theerror;
+    char *name = ptsname (fd); ifnull (name) goto theerror;
+    cstring_cp (frame->tty_name, MAX_TTYNAME, name, MAX_TTYNAME - 1);
+  } else
+    fd = frame->fd;
+
   if (-1 is (frame->pid = fork ())) goto theerror;
 
   ifnot (frame->pid) {
@@ -3606,6 +3645,7 @@ static void vwm_exit_signal (int sig) {
 
 static int vwm_main (vwm_t *this) {
   ifnot ($my(length)) return OK;
+
   if (NULL is $my(current)) {
     $my(current) = $my(head);
     $my(cur_idx) = 0;
@@ -3645,7 +3685,7 @@ static int vwm_main (vwm_t *this) {
 
   Vwin.set.separators (win, DRAW);
 
-  vwm_frame *frame = win->head;
+  vwm_frame *frame = win->current;
   while (frame) {
     if (frame->argv is NULL)
       Vframe.set.command (frame, $my(default_app)->bytes);
@@ -3665,6 +3705,7 @@ static int vwm_main (vwm_t *this) {
 
 check_length:
     ifnot (win->length) {
+      retval = OK;
       if (1 isnot $my(length))
         self(change_win, win, PREV_POS, DRAW);
 
@@ -3810,14 +3851,14 @@ getc_again:
       break;
 
     case '\t': {
-        int retval = $my(on_tab_callback) (this, win, frame, $my(user_object)[VED_OBJECT]);
+        int retval = $my(on_tab_callback) (this, win, frame, $my(objects)[VWMED_OBJECT]);
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
       }
       break;
 
     case ':': {
-        int retval = $my(rline_callback) (this, win, frame, $my(user_object)[VED_OBJECT]);
+        int retval = $my(rline_callback) (this, win, frame, $my(objects)[VWMED_OBJECT]);
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
 
@@ -3863,7 +3904,7 @@ getc_again:
         }
       break;
 
-    case 'k':
+    case 'K':
       if (0 is Vframe.kill_proc (frame))
         Vwin.delete_frame (win, frame, DRAW);
       break;
@@ -3874,10 +3915,6 @@ getc_again:
 
     case CTRL('l'):
       Vwin.draw (win);
-      break;
-
-    case 'l':
-      Vframe.clear (frame);
       break;
 
     case 's': {
@@ -3924,17 +3961,22 @@ getc_again:
       Vframe.edit_log (frame);
       break;
 
+    case 'j':
+    case 'k':
+    case 'w':
     case ARROW_DOWN_KEY:
     case ARROW_UP_KEY:
-    case 'w':
-      Vwin.frame.change (win, frame, (c is 'w' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DONOT_DRAW);
+      Vwin.frame.change (win, frame, (
+        c is 'w' or c is 'j' or c is ARROW_DOWN_KEY) ? DOWN_POS : UP_POS, DONOT_DRAW);
       break;
 
+    case 'h':
+    case 'l':
+    case '`':
     case ARROW_LEFT_KEY:
     case ARROW_RIGHT_KEY:
-    case '`':
       self(change_win, win,
-          (c is ARROW_RIGHT_KEY) ? NEXT_POS :
+          (c is ARROW_RIGHT_KEY or c is 'l') ? NEXT_POS :
           (c is '`') ? LAST_POS : PREV_POS, DRAW);
       break;
 
@@ -4008,11 +4050,12 @@ public vwm_t *__init_vwm__ (void) {
         .editor = vwm_get_editor,
         .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
+        .num_wins = vwm_get_num_wins,
         .mode_key = vwm_get_mode_key,
+        .object_at = vwm_get_object_at,
         .current_win = vwm_get_current_win,
         .default_app = vwm_get_default_app,
-        .current_frame = vwm_get_current_frame,
-        .user_object_at = vwm_get_user_object_at
+        .current_frame = vwm_get_current_frame
       },
       .set = (vwm_set_self) {
         .size = vwm_set_size,
@@ -4022,9 +4065,9 @@ public vwm_t *__init_vwm__ (void) {
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
         .mode_key = vwm_set_mode_key,
+        .object_at = vwm_set_object_at,
         .current_at = vwm_set_current_at,
         .default_app = vwm_set_default_app,
-        .user_object_at = vwm_set_user_object_at,
         .rline_callback =  vwm_set_rline_callback,
         .on_tab_callback = vwm_set_on_tab_callback,
         .edit_file_callback = vwm_set_edit_file_callback
@@ -4064,7 +4107,8 @@ public vwm_t *__init_vwm__ (void) {
       .get = (vwm_win_get_self) {
         .frame_at = win_get_frame_at,
         .frame_idx = win_get_frame_idx,
-        .num_frames = win_get_num_frames
+        .num_frames = win_get_num_frames,
+        .current_frame = win_get_current_frame
       },
       .frame = (vwm_win_frame_self) {
         .change = win_frame_change,
@@ -4078,6 +4122,7 @@ public vwm_t *__init_vwm__ (void) {
       .clear = frame_clear,
       .edit_log = frame_edit_log,
       .check_pid = frame_check_pid,
+      .create_fd = frame_create_fd,
       .on_resize = frame_on_resize,
       .kill_proc = frame_kill_proc,
       .release_log = frame_release_log,
@@ -4110,7 +4155,7 @@ public vwm_t *__init_vwm__ (void) {
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
-  $my(user_object)[VED_OBJECT] = NULL;
+  $my(objects)[VWMED_OBJECT] = NULL;
 
   self(new.term);
   self(set.rline_callback, vwm_default_rline_callback);

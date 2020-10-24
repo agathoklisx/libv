@@ -32,6 +32,8 @@ struct v_prop {
   vtach_t *vtach;
   vwmed_t *vwmed;
 
+  void *objects[NUM_OBJECTS];
+
   v_init_opts *opts;
   string_t *as_sockname;
   int input_fd;
@@ -55,7 +57,48 @@ static const char usage[] =
   "        --exit          create the socket, fork and then exit\n"
   "\n";
 
-private int v_exec_child_default (vtach_t *vtach, int argc, char **argv) {
+private vwm_t *v_get_vwm (v_t *this) {
+  return $my(vwm);
+}
+
+private vwmed_t *v_get_vwmed (v_t *this) {
+  return $my(vwmed);
+}
+
+private vtach_t *v_get_vtach (v_t *this) {
+  return $my(vtach);
+}
+
+private char *v_get_sockname (v_t *this) {
+  ifnot (NULL is $my(opts)->sockname)
+    return $my(opts)->sockname;
+  ifnot (NULL is $my(as_sockname))
+    return $my(as_sockname)->bytes;
+  return NULL;
+}
+
+private void *v_get_object_at (v_t *this, int idx) {
+  if (idx >= NUM_OBJECTS or idx < 0) return NULL;
+  return $my(objects)[idx];
+}
+
+private void v_set_object_at (v_t *this, void *object, int idx) {
+  if (idx >= NUM_OBJECTS or idx < 0) return;
+  $my(objects)[idx] = object;
+}
+
+private int v_exec_child (vtach_t *vtach, int argc, char **argv) {
+  (void) argc; (void) argv;
+  vwm_t *vwm = Vtach.get.vwm (vtach);
+
+  int retval = Vwm.main (vwm);
+
+  vwmed_t *vwmed = (vwmed_t *) Vwm.get.object_at (vwm, VWMED_OBJECT);
+  __deinit_vwmed__ (&vwmed);
+  return retval;
+}
+
+private int v_pty_main (vtach_t *vtach, int argc, char **argv) {
   vwm_t *vwm = Vtach.get.vwm (vtach);
 
   int rows = Vwm.get.lines (vwm);
@@ -68,14 +111,10 @@ private int v_exec_child_default (vtach_t *vtach, int argc, char **argv) {
       .max_frames = 2));
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   Vframe.set.argv (frame, argc, argv);
-  Vframe.set.log  (frame, NULL, 1);
-  Vframe.fork (frame);
+  Vframe.set.log (frame, NULL, 1);
+  Vframe.create_fd (frame);
 
-  int retval = Vwm.main (vwm);
-
-  vwmed_t *vwmed = (vwmed_t *) Vwm.get.user_object_at (vwm, VED_OBJECT);
-  __deinit_vwmed__ (&vwmed);
-  return retval;
+  return OK;
 }
 
 private string_t *v_make_sockname (v_t *this, char *sockdir, char *as) {
@@ -177,10 +216,13 @@ private int v_main (v_t *this) {
   int force = opts->force;
   int send_data = opts->send_data;
   int exit_this = opts->exit;
+  int exit_on_no_command = opts->exit_on_no_command;
   char *sockname = opts->sockname;
   char **argv = opts->argv;
   char *as = opts->as;
   char *data = opts->data;
+  VExecChild vexec_child = (opts->at_exec_child is NULL ? v_exec_child : opts->at_exec_child);
+  VPtyMain vpty_main = (opts->at_pty_main is NULL ? v_pty_main : opts->at_pty_main);
 
   if ($my(opts)->parse_argv) {
     argparse_option_t options[] = {
@@ -215,11 +257,13 @@ private int v_main (v_t *this) {
     sockname = $my(as_sockname)->bytes;
   }
 
-  if (argc is 0 or argv is NULL) {
-    if (0 is attach and 0 is send_data) {
-      fprintf (stderr, "command hasn't been set\n");
-      fprintf (stderr, "%s", usage);
-      return 1;
+  if (exit_on_no_command) {
+    if (argc is 0 or argv is NULL) {
+      if ((0 is attach and 0 is send_data)) {
+        fprintf (stderr, "command hasn't been set\n");
+        fprintf (stderr, "%s", usage);
+        return 1;
+      }
     }
   }
 
@@ -249,16 +293,16 @@ private int v_main (v_t *this) {
 
   vtach_t *vtach = $my(vtach);
 
-  if (NOTOK is Vtach.init.pty ($my(vtach), sockname))
+  if (NOTOK is Vtach.init.pty (vtach, sockname))
     return 1;
 
   ifnot (attach) {
     vwmed_t *vwmed = $my(vwmed);
-
     Vwmed.init.ved (vwmed);
 
-    Vtach.set.exec_child_cb ($my(vtach), v_exec_child_default);
-
+    Vtach.set.object_at (vtach, vwmed, VWMED_OBJECT);
+    Vtach.set.exec_child_cb ($my(vtach), vexec_child);
+    Vtach.set.pty_main_cb ($my(vtach), vpty_main);
     Vtach.pty.main ($my(vtach), argc, argv);
   }
 
@@ -275,7 +319,17 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
 
   this->self = (v_self) {
     .main = v_main,
-    .send = v_send
+    .send = v_send,
+    .get = (v_get_self) {
+      .vwm = v_get_vwm,
+      .vwmed = v_get_vwmed,
+      .vtach = v_get_vtach,
+      .sockname = v_get_sockname,
+      .object_at = v_get_object_at
+    },
+    .set = (v_set_self) {
+      .object_at = v_set_object_at
+    }
   };
 
   struct termios orig_mode;
@@ -287,16 +341,22 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
   $my(opts) = opts;
   $my(as_sockname) = NULL;
 
-  if (NULL is vwm) {
-    $my(vwm) = __init_vwm__ ();
-    vwm = $my(vwm);
-  } else
-    $my(vwm) = vwm;
+  if (NULL is vwm)
+    if (NULL is (vwm = __init_vwm__ ())) {
+      __deinit_v__ (&this);
+      return NULL;
+    }
 
-  $my(vtach) = __init_vtach__ ($my(vwm));
-  $my(vwmed) = __init_vwmed__ ($my(vwm));
+  $my(vwm) = vwm;
 
-  if (NULL is $my(vwmed)) {
+  vtach_t *vtach;
+  if (NULL is (vtach = __init_vtach__ (vwm))) {
+    __deinit_v__ (&this);
+    return NULL;
+  }
+
+  vwmed_t *vwmed;
+  if (NULL is (vwmed = __init_vwmed__ (vwm))) {
     ifnot (NULL is $my(opts)->argv) {
       for (int i = 0; i < $my(opts)->argc; i++) {
         if (0 is strcmp ($my(opts)->argv[i], "--send")) {
@@ -309,8 +369,8 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
       }
     }
 
-    $my(vwmed) = __init_vwmed__ ($my(vwm));
-    if (NULL is $my(vwmed)) {
+    vwmed = __init_vwmed__ (vwm);
+    if (NULL is vwmed) {
       __deinit_v__ (&this);
       return NULL;
     }
@@ -319,7 +379,14 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
       $my(orig_mode) = orig_mode;
   }
 
-  Vwm.set.user_object_at (vwm, this, V_OBJECT);
+  $my(vtach) = vtach;
+  $my(vwmed) = vwmed;
+
+  Vwm.set.object_at (vwm, this, V_OBJECT);
+
+  Vtach.set.object_at (vtach, this, V_OBJECT);
+  Vtach.set.object_at (vtach, vwm, VWM_OBJECT);
+  Vtach.set.object_at (vtach, vwmed, VWMED_OBJECT);
 
   return this;
 }

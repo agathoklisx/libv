@@ -13,16 +13,26 @@ typedef struct vtach_t vtach_t;
 typedef struct vtach_prop vtach_prop;
 
 typedef int (*PtyOnExecChild_cb) (vtach_t *, int, char **);
+typedef PtyOnExecChild_cb PtyMain_cb;
 
 typedef struct vtach_set_self {
-  void (*exec_child_cb) (vtach_t *, PtyOnExecChild_cb);
+  void
+    (*object_at) (vtach_t *, void *, int),
+    (*pty_main_cb) (vtach_t *, PtyMain_cb),
+    (*exec_child_cb) (vtach_t *, PtyOnExecChild_cb);
   vwm_t *(*vwm) (vtach_t *);
 } vtach_set_self;
 
 typedef struct vtach_get_self {
-  vwm_t *(*vwm) (vtach_t *);
-  vwm_term *(*term) (vtach_t *);
+  char *(*sockname) (vtach_t *);
+
   size_t (*sock_max_data_size) (vtach_t *);
+
+  vwm_t *(*vwm) (vtach_t *);
+
+  vwm_term *(*term) (vtach_t *);
+
+  void *(*object_at) (vtach_t *, int);
 } vtach_get_self;
 
 typedef struct vtach_init_self {
@@ -31,7 +41,6 @@ typedef struct vtach_init_self {
 
   vwm_term
     *(*term) (vtach_t *, int *, int *);
-
 } vtach_init_self;
 
 typedef struct vtach_sock_self {

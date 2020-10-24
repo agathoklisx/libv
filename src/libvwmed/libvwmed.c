@@ -35,7 +35,13 @@ struct vwmed_prop {
   EdToplineMethod orig_topline;
   string_t *topline;
   video_t  *video;
+
+  int state;
 };
+
+#define VWMED_VFRAME_CLEAR_VIDEO_MEM (1 << 0)
+#define VWMED_VFRAME_CLEAR_LOG       (1 << 1)
+#define VWMED_CLEAR_CURRENT_FRAME    (1 << 2)
 
 private void ed_set_topline_void (ed_t *ed, buf_t *buf) {
   (void) ed; (void) buf;
@@ -77,6 +83,23 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
         Vwm.get.current_frame ($my(vwm)), DRAW);
     retval = OK;
     goto theend;
+
+  } else if (Cstring.eq (com->bytes, "frame_clear")) {
+    $my(state) |= (VWMED_CLEAR_CURRENT_FRAME|VWMED_VFRAME_CLEAR_VIDEO_MEM|VWMED_VFRAME_CLEAR_LOG);
+    string_t *clear_log = Rline.get.anytype_arg (rl, "clear-log");
+    string_t *clear_mem = Rline.get.anytype_arg (rl, "clear-video-mem");
+
+    ifnot (NULL is clear_log)
+      if (atoi (clear_log->bytes) is 0)
+        $my(state) &= ~VWMED_VFRAME_CLEAR_LOG;
+
+    ifnot (NULL is clear_mem)
+      if (atoi (clear_log->bytes) is 0)
+        $my(state) &= ~VWMED_VFRAME_CLEAR_VIDEO_MEM;
+
+    retval = OK;
+    goto theend;
+
   } else if (Cstring.eq (com->bytes, "split_and_fork")) {
     retval = OK;
 
@@ -94,6 +117,7 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
 
     Vframe.fork (frame);
     goto theend;
+
   } else if (Cstring.eq (com->bytes, "win_new")) {
     string_t *a_draw = Rline.get.anytype_arg (rl, "draw");
     string_t *a_focus = Rline.get.anytype_arg (rl, "focus");
@@ -135,6 +159,7 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
 
     Vstring.free (a_commands);
     goto theend;
+
   } else if (Cstring.eq (com->bytes, "ed")) {
     string_t *line = Rline.get.line (rl);
     String.delete_numbytes_at (line, 2, 0);
@@ -150,6 +175,7 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
         .draw = 1,
         .commands = commands));
     goto theend;
+
   } else if (Cstring.eq (com->bytes, "set")) {
     string_t *log_file = Rline.get.anytype_arg (rl, "log-file");
     if (NULL is log_file)
@@ -170,7 +196,6 @@ theend:
 }
 
 private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object, int should_return) {
-  (void) frame;
   vwmed_t *this = (vwmed_t *) object;
 
   $my(win) = Ed.get.current_win ($my(ed));
@@ -196,8 +221,13 @@ private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *obj
     win = Vwm.get.current_win (vwm);
   }
 
-  ifnot (NULL is win)
+  ifnot (NULL is win) {
     Vwin.draw (win);
+    if ($my(state) & VWMED_CLEAR_CURRENT_FRAME) {
+      $my(state) &= ~VWMED_CLEAR_CURRENT_FRAME;
+      Vframe.clear (frame, $my(state));
+    }
+  }
 
   return retval;
 }
@@ -264,17 +294,21 @@ private int vwmed_init_ved (vwmed_t *this) {
   Ed.append.rline_command ($my(ed), "frame_delete", 0, 0);
   Ed.append.command_arg   ($my(ed), "frame_delete", "--idx=", 6);
 
+  Ed.append.rline_command ($my(ed), "frame_clear", 0, 0);
+  Ed.append.command_arg   ($my(ed), "frame_clear", "--clear-log=", 12);
+  Ed.append.command_arg   ($my(ed), "frame_clear", "--clear-video-mem=", 18);
+
   Ed.append.rline_command ($my(ed), "split_and_fork", 0, 0);
-  Ed.append.command_arg ($my(ed),   "split_and_fork", "--command={", 11);
+  Ed.append.command_arg   ($my(ed), "split_and_fork", "--command={", 11);
 
   Ed.append.rline_command ($my(ed), "win_new", 0, 0);
-  Ed.append.command_arg ($my(ed), "win_new", "--draw=", 7);
-  Ed.append.command_arg ($my(ed), "win_new", "--focus=", 8);
-  Ed.append.command_arg ($my(ed), "win_new", "--command={", 11);
-  Ed.append.command_arg ($my(ed), "win_new", "--num-frames=", 13);
+  Ed.append.command_arg   ($my(ed), "win_new", "--draw=", 7);
+  Ed.append.command_arg   ($my(ed), "win_new", "--focus=", 8);
+  Ed.append.command_arg   ($my(ed), "win_new", "--command={", 11);
+  Ed.append.command_arg   ($my(ed), "win_new", "--num-frames=", 13);
 
   Ed.append.rline_command ($my(ed), "set", 0, 0);
-  Ed.append.command_arg ($my(ed), "set", "--log-file=", 11);
+  Ed.append.command_arg   ($my(ed), "set", "--log-file=", 11);
 
   Ed.append.rline_command ($my(ed), "ed", 0, 0);
   if (Cstring.eq_n ("veda", Vwm.get.editor ($my(vwm)), 4)) {
@@ -358,12 +392,14 @@ public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
   $my(__This__) = __This__;
   $my(__E__)    = $my(__This__)->__E__;
 
+  $my(state) = 0;
+
   if (NULL is vwm)
     $my(vwm) = __init_vwm__ ();
   else
     $my(vwm) = vwm;
 
-  Vwm.set.user_object_at ($my(vwm), (void *) this, VED_OBJECT);
+  Vwm.set.object_at ($my(vwm), (void *) this, VWMED_OBJECT);
 
   return this;
 }

@@ -83,6 +83,10 @@ struct vtach_prop {
 
   struct client *clients;
   struct pty pty;
+
+  void *objects[NUM_OBJECTS];
+
+  PtyMain_cb pty_main_cb;
   PtyOnExecChild_cb exec_child_cb;
 };
 
@@ -478,7 +482,6 @@ private void pty_activity (vtach_t *this, int s) {
   int max_fd, nclients;
 
   len = read ($my(pty).fd, buf, sizeof (buf));
-
   if (len <= 0)
     exit (1);
 
@@ -662,12 +665,10 @@ private void pty_process (vtach_t *this, int s, int argc, char **argv, int statu
 
     FD_ZERO(&readfds);
     FD_SET(s, &readfds);
-    max_fd = s + 1;
+    max_fd = s;
 
-    /*
-    ** When waitattach is set, wait until the client attaches
-    ** before trying to read from the pty.
-    */
+    /* When waitattach is set, wait until the client attaches
+     * before trying to read from the pty. */
     if ($my(waitattach)) {
       if ($my(clients) and $my(clients)->attached)
         $my(waitattach) = 0;
@@ -741,12 +742,18 @@ private int vtach_pty_main (vtach_t *this, int argc, char **argv) {
   int rows; int cols;
   self(init.term, &rows, &cols);
 
+  int retval;
+  if (OK isnot (retval = $my(pty_main_cb) (this, argc, argv))) {
+    unlink ($my(sockname));
+    close (s);
+    return retval;
+  }
+
   pid_t pid = fork ();
 
   if (pid < 0) {
     fprintf (stderr, "fork: %s\n", strerror (errno));
     unlink ($my(sockname));
-    return -1;
   } else if (pid is 0) {
     /* Child - this becomes the master */
     if (fd[0] != -1)
@@ -776,7 +783,7 @@ private vwm_term *vtach_init_term (vtach_t *this, int *rows, int *cols) {
   return term;
 }
 
-private int vtach_exec_child_default (vtach_t *this, int argc, char **argv) {
+private int vtach_pty_main_default (vtach_t *this, int argc, char **argv) {
   vwm_t *vwm = $my(vwm);
 
   int rows = Vwm.get.lines (vwm);
@@ -789,8 +796,12 @@ private int vtach_exec_child_default (vtach_t *this, int argc, char **argv) {
       .max_frames = 2));
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   Vframe.set.argv (frame, argc, argv);
-  Vframe.fork (frame);
+  return OK;
+}
 
+private int  vtach_exec_child_default (vtach_t *this, int argc, char **argv) {
+  (void) argc; (void) argv;
+  vwm_t *vwm = $my(vwm);
   return Vwm.main (vwm);
 }
 
@@ -812,13 +823,23 @@ private int vtach_init_pty (vtach_t *this, char *sockname) {
   $my(detach_char) = 04;
   $my(waitattach) = 1;
 
+  $my(pty_main_cb) = vtach_pty_main_default;
   $my(exec_child_cb) = vtach_exec_child_default;
 
   return OK;
 }
 
+private void vtach_set_object_at (vtach_t *this, void *object, int idx) {
+  if (idx >= NUM_OBJECTS or idx < 0) return;
+  $my(objects)[idx] = object;
+}
+
 private void vtach_set_exec_child_cb (vtach_t *this, PtyOnExecChild_cb cb) {
   $my(exec_child_cb) = cb;
+}
+
+private void vtach_set_pty_main_cb (vtach_t *this, PtyMain_cb cb) {
+  $my(pty_main_cb) = cb;
 }
 
 private vwm_t *vtach_get_vwm (vtach_t *this) {
@@ -827,6 +848,15 @@ private vwm_t *vtach_get_vwm (vtach_t *this) {
 
 private vwm_term *vtach_get_term (vtach_t *this) {
   return $my(term);
+}
+
+private char *vtach_get_sockname (vtach_t *this) {
+  return $my(sockname);
+}
+
+private void *vtach_get_object_at (vtach_t *this, int idx) {
+  if (idx >= NUM_OBJECTS or idx < 0) return NULL;
+  return $my(objects)[idx];
 }
 
 private size_t vtach_get_sock_max_data_size (vtach_t *this) {
@@ -841,11 +871,15 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
 
   this->self = (vtach_self) {
     .set = (vtach_set_self) {
+      .object_at = vtach_set_object_at,
+      .pty_main_cb = vtach_set_pty_main_cb,
       .exec_child_cb = vtach_set_exec_child_cb
     },
     .get = (vtach_get_self) {
       .vwm = vtach_get_vwm,
       .term = vtach_get_term,
+      .sockname = vtach_get_sockname,
+      .object_at = vtach_get_object_at,
       .sock_max_data_size = vtach_get_sock_max_data_size
     },
     .init = (vtach_init_self) {
@@ -873,7 +907,7 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
   $my(term) = Vwm.get.term ($my(vwm));
   $my(mode_key) = Vwm.get.mode_key ($my(vwm));
 
-  Vwm.set.user_object_at ($my(vwm), (void *) this, VTACH_OBJECT);
+  Vwm.set.object_at ($my(vwm), (void *) this, VTACH_OBJECT);
 
   return this;
 }

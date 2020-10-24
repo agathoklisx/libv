@@ -29,10 +29,18 @@ typedef signed int utf8;
 #define MAXLEN_LINE 4096
 #endif
 
-#define VED_OBJECT   0
-#define VTACH_OBJECT 1
-#define V_OBJECT     2
-#define U_OBJECT     3
+#ifdef BUFIZE
+#undef BUFSIZE
+#endif
+
+#define BUFSIZE     4096
+
+#define VWM_OBJECT   0
+#define VWMED_OBJECT 1
+#define VTACH_OBJECT 2
+#define V_OBJECT     3
+#define U_OBJECT     4
+#define NUM_OBJECTS  U_OBJECT + 1
 
 #define DOWN_POS    2
 #define NEXT_POS    1
@@ -43,6 +51,9 @@ typedef signed int utf8;
 #define VWM_DONE     (1 << 0)
 #define VWM_IGNORE_FOR_NOW (1 << 1)
 #define VWM_QUIT     (1 << 2)      // this coresponds to EXIT_THIS
+
+#define VFRAME_CLEAR_VIDEO_MEM (1 << 0)
+#define VFRAME_CLEAR_LOG       (1 << 1)
 
 #define DRAW        1
 #define DONOT_DRAW  0
@@ -131,8 +142,9 @@ typedef struct vwm_frame_set_self {
     (*fd) (vwm_frame *, int),
     (*argv) (vwm_frame *, int, char **),
     (*command) (vwm_frame *, char *),
-    (*unimplemented) (vwm_frame *, Unimplemented),
-    (*process_output) (vwm_frame *, ProcessOutput);
+    (*unimplemented) (vwm_frame *, Unimplemented);
+
+  ProcessOutput (*process_output) (vwm_frame *, ProcessOutput);
 
   int (*log) (vwm_frame *, char *,  int);
 } vwm_frame_set_self;
@@ -142,7 +154,7 @@ typedef struct vwm_frame_self {
   vwm_frame_set_self set;
 
   void
-    (*clear) (vwm_frame *),
+    (*clear) (vwm_frame *, int),
     (*on_resize) (vwm_frame *, int, int),
     (*release_argv) (vwm_frame *),
     (*release_log) (vwm_frame *),
@@ -151,7 +163,8 @@ typedef struct vwm_frame_self {
   int
     (*edit_log) (vwm_frame *),
     (*check_pid) (vwm_frame *),
-    (*kill_proc) (vwm_frame *);
+    (*kill_proc) (vwm_frame *),
+    (*create_fd) (vwm_frame *);
 
   pid_t (*fork) (vwm_frame *);
 } vwm_frame_self;
@@ -178,10 +191,11 @@ typedef struct vwm_win_get_self {
 
 typedef struct vwm_win_frame_self {
   void
-    (*change)        (vwm_win *, vwm_frame *, int, int),
     (*set_size)      (vwm_win *, vwm_frame *, int, int),
     (*increase_size) (vwm_win *, vwm_frame *, int, int),
     (*decrease_size) (vwm_win *, vwm_frame *, int, int);
+
+  vwm_frame *(*change) (vwm_win *, vwm_frame *, int, int);
 } vwm_win_frame_self;
 
 typedef struct vwm_win_self {
@@ -207,12 +221,14 @@ typedef struct vwm_win_self {
 
 typedef struct vwm_get_self {
   void
-    *(*user_object_at) (vwm_t *, int);
+    *(*object_at) (vwm_t *, int);
+
   int
     (*state) (vwm_t *),
     (*lines) (vwm_t *),
     (*columns) (vwm_t *),
-    (*win_idx) (vwm_t *, vwm_win *);
+    (*win_idx) (vwm_t *, vwm_win *),
+    (*num_wins) (vwm_t *);
 
   char
     *(*shell) (vwm_t *),
@@ -234,8 +250,8 @@ typedef struct vwm_set_self {
     (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t),
     (*mode_key) (vwm_t *, char),
+    (*object_at) (vwm_t *, void *, int),
     (*default_app) (vwm_t *, char *),
-    (*user_object_at) (vwm_t *, void *, int),
     (*rline_callback) (vwm_t *, RLineCallback),
     (*on_tab_callback) (vwm_t *, OnTabCallback),
     (*edit_file_callback) (vwm_t *, EditFileCallback);
