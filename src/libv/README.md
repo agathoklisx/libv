@@ -64,6 +64,7 @@ Invocation and Options:
      -f, --force         connect to socket, even when socket exists
          --send          send data to the specified socket from standard input and then exit
          --exit          create the socket, fork and then exit
+         --remove-socket remove socket if exists and can not be connected
 ```
   
 Refer to the sources for inner details and probably a more updated help message  

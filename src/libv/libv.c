@@ -55,6 +55,7 @@ static const char usage[] =
   "    -f, --force         connect to socket, even when socket exists\n"
   "        --send          send data to the specified socket from standard input\n"
   "        --exit          create the socket, fork and then exit\n"
+  "        --remove-socket remove socket if exists and can not be connected\n"
   "\n";
 
 private vwm_t *v_get_vwm (v_t *this) {
@@ -128,31 +129,56 @@ private string_t *v_make_sockname (v_t *this, char *sockdir, char *as) {
   vwmed_t *vwmed = $my(vwmed);
 
   size_t aslen = bytelen (as);
-  size_t dirlen;
 
-  char *sockd = sockdir;
-  if (NULL is sockd) {
+  string_t *sockname = String.new (aslen + 16);
+
+  if (NULL is sockdir) {
     string_t *tmp = E.get.env (Vwmed.get.e (vwmed), "tmp_dir");
-    sockd = tmp->bytes;
-    dirlen = tmp->num_bytes;
-  } else {
-    dirlen = bytelen (sockd);
-    while (sockd[dirlen - 1] is '/') {
-      dirlen--;
-      sockd[dirlen] = '\0';
-    }
-  }
+    String.append_with_len (sockname, tmp->bytes, tmp->num_bytes);
 
-  size_t tlen = aslen + dirlen + 1;
+    tmp = E.get.env (Vwmed.get.e (vwmed), "user_name");
+    String.append_fmt (sockname, "/%s_vsockets", tmp->bytes);
+
+    if (File.exists (sockname->bytes)) {
+      ifnot (Dir.is_directory (sockname->bytes)) {
+        fprintf (stderr, "%s: not a directory\n", sockname->bytes);
+        goto theerror;
+      }
+
+      if (-1 is access (sockname->bytes, W_OK|R_OK|X_OK)) {
+        fprintf (stderr, "%s: insufficient permissions\n", sockname->bytes);
+        goto theerror;
+      }
+    } else {
+      if (-1 is mkdir (sockname->bytes, S_IRWXU)) {
+        fprintf (stderr, "%s: can not make directory\n", sockname->bytes);
+        fprintf (stderr, "%s\n", strerror (errno));
+        goto theerror;
+      }
+    }
+
+    String.append_fmt (sockname, "/%s", as);
+  } else {
+    size_t dirlen = bytelen (sockdir);
+    while (sockdir[dirlen - 1] is '/') {
+      dirlen--;
+      sockdir[dirlen] = '\0';
+    }
+
+    String.append_fmt (sockname, "%s/%s", sockdir, as);
+  }
 
   struct sockaddr_un sockun;
-  if (tlen  > sizeof (sockun.sun_path) - 1) {
-    fprintf (stderr, "socket name succeeds %zd limit\n", sizeof (sockun.sun_path));
-    return NULL;
+  if (sockname->num_bytes > sizeof (sockun.sun_path) - 1) {
+    fprintf (stderr, "socket name `%s' exceeds %zd limit\n", sockname->bytes, sizeof (sockun.sun_path));
+    goto theerror;
   }
 
-  string_t *sockname = String.new_with_fmt ("%s/%s", sockd, as);
   return sockname;
+
+theerror:
+  String.free (sockname);
+  return NULL;
 }
 
 private int v_send (v_t *this, char *sockname, char *data) {
@@ -209,13 +235,16 @@ theend:
 }
 
 private int v_main (v_t *this) {
+  vtach_t *vtach = $my(vtach);
+
   v_init_opts *opts = $my(opts);
 
-  int attach = opts->attach;
   int argc = opts->argc;
   int force = opts->force;
-  int send_data = opts->send_data;
+  int attach = opts->attach;
   int exit_this = opts->exit;
+  int send_data = opts->send_data;
+  int remove_socket = opts->remove_socket;
   int exit_on_no_command = opts->exit_on_no_command;
   char *sockname = opts->sockname;
   char **argv = opts->argv;
@@ -234,6 +263,7 @@ private int v_main (v_t *this) {
       OPT_BOOLEAN(0, "force", &force, "connect to socket, even when socket exists", NULL, 0, 0),
       OPT_BOOLEAN(0, "send", &send_data, "send data to the specified socket", NULL, 0, 0),
       OPT_BOOLEAN(0, "exit", &exit_this, "create the socket, fork and then exit", NULL, 0, 0),
+      OPT_BOOLEAN(0, "remove-socket", &remove_socket, "remove socket if exists and can not be connected", NULL, 0, 0),
       OPT_END()
     };
 
@@ -270,8 +300,10 @@ private int v_main (v_t *this) {
   if (File.exists (sockname)) {
     if (0 is attach and 0 is send_data) {
       ifnot (force) {
-        fprintf (stderr, "%s: exists in the filesystem\n", sockname);
-        return 1;
+        ifnot (remove_socket) {
+          fprintf (stderr, "%s: exists in the filesystem\n", sockname);
+          return 1;
+        }
       }
     }
 
@@ -279,6 +311,21 @@ private int v_main (v_t *this) {
       fprintf (stderr, "%s: is not a socket\n", sockname);
       return 1;
     }
+
+    int fd = Vtach.sock.connect (vtach, sockname);
+    if (0 is attach and 0 is send_data)
+      if (remove_socket)
+        unlink (sockname);
+
+    if (NOTOK is fd) {
+      if (attach or send_data) {
+        if (remove_socket)
+          unlink (sockname);
+        fprintf (stderr, "can not connect/attach to the socket\n");
+        return 1;
+      }
+    } else
+      close (fd);
   }
 
   if (0 is send_data or (send_data and data isnot NULL)) {
@@ -290,8 +337,6 @@ private int v_main (v_t *this) {
 
   if (send_data)
     return self(send, sockname, data);
-
-  vtach_t *vtach = $my(vtach);
 
   if (NOTOK is Vtach.init.pty (vtach, sockname))
     return 1;

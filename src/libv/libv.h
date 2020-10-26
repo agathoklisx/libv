@@ -22,6 +22,7 @@ typedef struct v_init_opts {
     attach,
     send_data,
     parse_argv,
+    remove_socket,
     exit_on_no_command;
 
   VExecChild at_exec_child;
@@ -40,6 +41,7 @@ typedef struct v_init_opts {
   .attach = 0,             \
   .send_data = 0,          \
   .parse_argv = 1,         \
+  .remove_socket = 0,      \
   .at_pty_main = NULL,     \
   .at_exec_child = NULL,   \
   .exit_on_no_command = 1, \
