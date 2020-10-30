@@ -67,7 +67,7 @@ static vwm_t *VWM;
 #define isnotutf8(c_)   (IS_UTF8 (c_) == 0)
 #define isnotatty(fd_)  (0 == isatty ((fd_)))
 
-#define STR_FMT(len_, fmt_, ...)                                      \
+#define STR_FMT_LEN(len_, fmt_, ...)                                      \
 ({                                                                    \
   char buf_[len_];                                                    \
   snprintf (buf_, len_, fmt_, __VA_ARGS__);                           \
@@ -167,7 +167,7 @@ struct tmpname_t {
   char fname[PATH_MAX];
  };
 
-typedef string_t *(*ProcessChar) (vwm_frame *, string_t *, int);
+typedef string_t *(*FrameProcessChar_cb) (vwm_frame *, string_t *, int);
 
 struct vwm_frame {
   char
@@ -217,9 +217,10 @@ struct vwm_frame {
 
   string_t *render;
 
-  ProcessOutput process_output;
-  ProcessChar process_char;
-  Unimplemented unimplemented;
+  FrameProcessOutput_cb process_output_cb;
+  FrameProcessChar_cb   process_char_cb;
+  FrameUnimplemented_cb unimplemented_cb;
+  FrameAtFork_cb        at_fork_cb;
 
   vwm_win *parent;
   vwm_t   *root;
@@ -310,9 +311,9 @@ struct vwm_prop {
 
   void *objects[NUM_OBJECTS];
 
-  OnTabCallback on_tab_callback;
-  RLineCallback rline_callback;
-  EditFileCallback edit_file_callback;
+  VwmOnTab_cb on_tab_cb;
+  VwmRLine_cb rline_cb;
+  VwmEditFile_cb edit_file_cb;
 };
 
 static void vwm_sigwinch_handler (int sig);
@@ -889,8 +890,8 @@ static void vwm_set_default_app (vwm_t *this, char *app) {
   string_append_with_len ($my(default_app), app, len);
 }
 
-static void vwm_set_on_tab_callback (vwm_t *this, OnTabCallback cb) {
-  $my(on_tab_callback) = cb;
+static void vwm_set_on_tab_cb (vwm_t *this, VwmOnTab_cb cb) {
+  $my(on_tab_cb) = cb;
 }
 
 static void vwm_set_object_at (vwm_t *this, void *object, int idx) {
@@ -898,12 +899,12 @@ static void vwm_set_object_at (vwm_t *this, void *object, int idx) {
   $my(objects)[idx] = object;
 }
 
-static void vwm_set_rline_callback (vwm_t *this, RLineCallback cb) {
-  $my(rline_callback) = cb;
+static void vwm_set_rline_cb (vwm_t *this, VwmRLine_cb cb) {
+  $my(rline_cb) = cb;
 }
 
-static void vwm_set_edit_file_callback (vwm_t *this, EditFileCallback cb) {
-  $my(edit_file_callback) = cb;
+static void vwm_set_edit_file_cb (vwm_t *this, VwmEditFile_cb cb) {
+  $my(edit_file_cb) = cb;
 }
 
 static void vwm_set_shell (vwm_t *this, char *shell) {
@@ -1370,11 +1371,11 @@ static void vt_write (char *buf, FILE *fp) {
 }
 
 static string_t *vt_insline (string_t *buf, int num) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dL", num));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dL", num));
 }
 
 static string_t *vt_insertchar (string_t *buf, int numcols) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d@", numcols));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d@", numcols));
 }
 
 static string_t *vt_savecursor (string_t *buf) {
@@ -1398,11 +1399,11 @@ static string_t *vt_clrline (string_t *buf) {
 }
 
 static string_t *vt_delunder (string_t *buf, int num) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dP", num));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dP", num));
 }
 
 static string_t *vt_delline (string_t *buf, int num) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dM", num));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dM", num));
 }
 
 static string_t *vt_attr_reset (string_t *buf) {
@@ -1410,23 +1411,23 @@ static string_t *vt_attr_reset (string_t *buf) {
 }
 
 static string_t *vt_reverse (string_t *buf, int on) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
 }
 
 static string_t *vt_underline (string_t *buf, int on) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
 }
 
 static string_t *vt_bold (string_t *buf, int on) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
 }
 
 static string_t *vt_italic (string_t *buf, int on) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
 }
 
 static string_t *vt_blink (string_t *buf, int on) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
 }
 
 static string_t *vt_bell (string_t *buf) {
@@ -1434,27 +1435,27 @@ static string_t *vt_bell (string_t *buf) {
 }
 
 static string_t *vt_setfg (string_t *buf, int color) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
 static string_t *vt_setbg (string_t *buf, int color) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;1m", color));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
 static string_t *vt_left (string_t *buf, int count) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dD", count));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dD", count));
 }
 
 static string_t *vt_right (string_t *buf, int count) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dC", count));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dC", count));
 }
 
 static string_t *vt_up (string_t *buf, int numrows) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dA", numrows));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dA", numrows));
 }
 
 static string_t *vt_down (string_t *buf, int numrows) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%dB", numrows));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dB", numrows));
 }
 
 static string_t *vt_revscroll (string_t *buf) {
@@ -1465,11 +1466,11 @@ static string_t *vt_setscroll (string_t *buf, int first, int last) {
   if (0 is first and 0 is last)
     return string_append (buf, "\033[r");
   else
-    return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
+    return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
 }
 
 static string_t *vt_goto (string_t *buf, int row, int col) {
-  return string_append (buf, STR_FMT (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
 }
 
 static string_t *vt_attr_check (string_t *buf, int pixel, int lastattr, uchar *currattr) {
@@ -1622,15 +1623,15 @@ static string_t *vt_keystate_print (string_t *buf, int application) {
 static string_t *vt_altcharset (string_t *buf, int charset, int type) {
   switch (type) {
     case UK_CHARSET:
-      string_append_with_len (buf, STR_FMT (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT_LEN (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case US_CHARSET:
-      string_append_with_len (buf, STR_FMT (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT_LEN (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case GRAPHICS:
-      string_append_with_len (buf, STR_FMT (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, STR_FMT_LEN (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
       break;
 
     default:  break;
@@ -1641,7 +1642,7 @@ static string_t *vt_altcharset (string_t *buf, int charset, int type) {
 static string_t *vt_esc_scan (vwm_frame *, string_t *, int);
 
 static void vt_frame_esc_set (vwm_frame *frame) {
-  frame->process_char = vt_esc_scan;
+  frame->process_char_cb = vt_esc_scan;
 
   for (int i = 0; i < MAX_PARAMS; i++)
     frame->esc_param[i] = 0;
@@ -1704,7 +1705,7 @@ static string_t *vt_esc_brace_q (vwm_frame *frame, string_t *buf, int c) {
         case 6: /* Set relative coordinates */
         case 8: /* Set auto repeat on */
         default:
-          frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+          frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
           break;
       }
       break;
@@ -1735,7 +1736,7 @@ static string_t *vt_esc_brace_q (vwm_frame *frame, string_t *buf, int c) {
       case 6: /* Set absolute coordinates */
       case 8: /* Set auto repeat off */
       default:
-        frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+        frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
         break;
     }
     break;
@@ -1775,7 +1776,7 @@ static string_t *vt_esc_lparen (vwm_frame *frame, string_t *buf, int c) {
     case '1': /* Alternate ROM as G0 */
     case '2': /* Alternate ROM special character set as G0 */
     default:
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
   }
 
@@ -1808,7 +1809,7 @@ static string_t *vt_esc_rparen (vwm_frame *frame, string_t *buf, int c) {
     case '1': /* Alternate ROM as G1 */
     case '2': /* Alternate ROM special character set as G1 */
     default:
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
   }
 
@@ -1823,7 +1824,7 @@ static string_t *vt_esc_pound (vwm_frame *frame, string_t *buf, int c) {
     case '5':  /* Single width, single height */
     case '6':  /* Double width */
     default:
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       vt_frame_esc_set (frame);
       break;
   }
@@ -1849,7 +1850,7 @@ static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     case 2: /* Half brightness */
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
 
     case 3:
@@ -1873,7 +1874,7 @@ static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     case 21: /* Normal brightness */
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
 
     case 22:
@@ -1915,7 +1916,7 @@ static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     default: /* Unknown escape */
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
   }
 
@@ -1946,7 +1947,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
       if (*frame->cur_param) {
         vt_frame_esc_set (frame);
       } else {
-        frame->process_char = vt_esc_brace_q;
+        frame->process_char_cb = vt_esc_brace_q;
       }
 
       return buf;
@@ -1963,7 +1964,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
         case 12: /* Local echo on */
         case 20: /* <Return> = CR */
         default:
-          frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+          frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
           break;
       }
       break;
@@ -1975,7 +1976,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
         case 12: /* Local echo off */
         case 20: /* <Return> = CR-LF */
         default:
-          frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+          frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
           break;
       }
       break;
@@ -2120,7 +2121,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
             break;
 
           default:
-            frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+            frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
             break;
         }
         break;
@@ -2188,7 +2189,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
             break;
 
           default:
-            frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+            frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
             break;
         }
         break;
@@ -2243,7 +2244,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
         break;
 
       case 'i': /* Printing */
-        frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+        frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
         break;
 
       case 'n': /* Device status request */
@@ -2268,7 +2269,7 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
         break;
 
       default:
-        frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+        frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
         break;
     }
 
@@ -2284,19 +2285,19 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     case '[':
-      frame->process_char = vt_esc_brace;
+      frame->process_char_cb = vt_esc_brace;
       return buf;
 
     case '(':
-      frame->process_char = vt_esc_lparen;
+      frame->process_char_cb = vt_esc_lparen;
       return buf;
 
     case ')':
-      frame->process_char = vt_esc_rparen;
+      frame->process_char_cb = vt_esc_rparen;
       return buf;
 
     case '#':
-      frame->process_char = vt_esc_pound;
+      frame->process_char_cb = vt_esc_pound;
       return buf;
 
     case 'D': /* Cursor down with scroll up at margin */
@@ -2361,7 +2362,7 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
 
     case 'N': /* Select charset G2 for one character */
     case 'O': /* Select charset G3 for one character */
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
 
     case 'H': /* Set horizontal tab */
@@ -2378,7 +2379,7 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     default:
-      frame->unimplemented (frame, __func__, c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
   }
 
@@ -2449,7 +2450,7 @@ static string_t *vt_esc_scan (vwm_frame *frame, string_t *buf, int c) {
       break;
 
     case '\033':
-      frame->process_char = vt_esc_e;
+      frame->process_char_cb = vt_esc_e;
       break;
 
     default:
@@ -2522,11 +2523,11 @@ static void win_set_frame (vwm_win *this, vwm_frame *frame) {
   vt_write (frame->render->bytes, stdout);
 }
 
-static void frame_process_output (vwm_frame *this, char *buf, int len) {
+static void frame_process_output_cb (vwm_frame *this, char *buf, int len) {
   string_clear (this->render);
 
   while (len--)
-    this->process_char (this, this->render, (uchar) *buf++);
+    this->process_char_cb (this, this->render, (uchar) *buf++);
 
   vt_write (this->render->bytes, stdout);
 }
@@ -2629,6 +2630,30 @@ static pid_t frame_get_pid (vwm_frame *this) {
   return this->pid;
 }
 
+static int frame_get_argc (vwm_frame *this) {
+  return this->argc;
+}
+
+static char **frame_get_argv (vwm_frame *this) {
+  return this->argv;
+}
+
+static vwm_win *frame_get_parent (vwm_frame *this) {
+  return this->parent;
+}
+
+static vwm_t *frame_get_root (vwm_frame *this) {
+  return this->root;
+}
+
+static int frame_get_logfd (vwm_frame *this) {
+  return this->logfd;
+}
+
+static char *frame_get_logfile (vwm_frame *this) {
+  return this->logfile;
+}
+
 static void frame_clear (vwm_frame *this, int state) {
   if (NULL is this) return;
 
@@ -2693,14 +2718,20 @@ static int frame_kill_proc (vwm_frame *this) {
   return 0;
 }
 
-static ProcessOutput frame_set_process_output (vwm_frame *this, ProcessOutput cb) {
-  ProcessOutput prev = this->process_output;
-  this->process_output = cb;
+static FrameProcessOutput_cb frame_set_process_output_cb (vwm_frame *this, FrameProcessOutput_cb cb) {
+  FrameProcessOutput_cb prev = this->process_output_cb;
+  this->process_output_cb = cb;
   return prev;
 }
 
-static void frame_set_unimplemented (vwm_frame *this, Unimplemented cb) {
-  this->unimplemented = cb;
+static FrameAtFork_cb frame_set_at_fork_cb (vwm_frame *this, FrameAtFork_cb cb) {
+  FrameAtFork_cb prev = this->at_fork_cb;
+  this->at_fork_cb = cb;
+  return prev;
+}
+
+static void frame_set_unimplemented_cb (vwm_frame *this, FrameUnimplemented_cb cb) {
+  this->unimplemented_cb = cb;
 }
 
 static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
@@ -2728,8 +2759,13 @@ static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
   return this->logfd;
 }
 
+static int frame_at_fork_default_cb (vwm_frame *this, vwm_t *root, vwm_win *parent) {
+  (void) this; (void) parent; (void) root;
+  return 1;
+}
+
 FILE *UNFP = NULL;
-static void def_unimplemented (vwm_frame *this, const char *fun, int c, int param) {
+static void frame_unimplemented_default_cb (vwm_frame *this, const char *fun, int c, int param) {
   (void) this;
   if (NULL is UNFP)
     UNFP = fopen ("/tmp/unimplemented_seq", "w");
@@ -2767,7 +2803,9 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   frame->render = string_new (2048);
   frame->state = 0;
 
-  frame->process_output = frame_process_output;
+  frame->process_output_cb = frame_process_output_cb;
+  frame->at_fork_cb = frame_at_fork_default_cb;
+  frame->unimplemented_cb = frame_unimplemented_default_cb;
 
   frame->videomem = vwm_alloc_ints (frame->num_rows, frame->num_cols, 0);
   frame->colors = vwm_alloc_ints (frame->num_rows, frame->num_cols, COLOR_FG_NORMAL);
@@ -2782,8 +2820,6 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   }
 
   vt_frame_reset (frame);
-
-  frame->unimplemented = def_unimplemented;
 
   return frame;
 }
@@ -3284,7 +3320,7 @@ static void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
     Vwin.set.separators (win, DONOT_DRAW);
 }
 
-static int vwm_default_edit_file_callback (vwm_t *this, char *file, void *object) {
+static int vwm_default_edit_file_cb (vwm_t *this, char *file, void *object) {
   (void) object;
   size_t len = $my(editor)->num_bytes + bytelen (file);
   char command[len + 2];
@@ -3312,7 +3348,7 @@ static int frame_edit_log (vwm_frame *frame) {
     write (frame->logfd, buf, len);
   }
 
-  $my(edit_file_callback) (this, frame->logfile, $my(objects)[VWMED_OBJECT]);
+  $my(edit_file_cb) (this, frame->logfile, $my(objects)[VWMED_OBJECT]);
 
   vt_video_add_log_lines (frame);
   Vwin.draw (win);
@@ -3507,7 +3543,7 @@ static pid_t frame_fork (vwm_frame *frame) {
   if (frame->pid isnot -1)
     return frame->pid;
 
-  char pid[8];  snprintf (pid, 6, "%d", getpid ());
+  char pid[8]; snprintf (pid, sizeof (pid), "%d", getpid ());
 
   vwm_t *this = frame->parent->parent;
 
@@ -3525,6 +3561,8 @@ static pid_t frame_fork (vwm_frame *frame) {
     cstring_cp (frame->tty_name, MAX_TTYNAME, name, MAX_TTYNAME - 1);
   } else
     fd = frame->fd;
+
+  frame->fd = fd;
 
   if (-1 is (frame->pid = fork ())) goto theerror;
 
@@ -3553,6 +3591,7 @@ static pid_t frame_fork (vwm_frame *frame) {
 #else
     maxfd = sysconf (_SC_OPEN_MAX);
 #endif
+
     for (int fda = 3; fda < maxfd; fda++)
       if (close (fda) is -1 and errno is EBADF)
         break;
@@ -3568,23 +3607,38 @@ static pid_t frame_fork (vwm_frame *frame) {
     setenv ("COLUMNS", cols, 1);
     setenv ("VWM", pid, 1);
 
-    execvp (frame->argv[0], frame->argv);
-    fprintf (stderr, "execvp() failed for command: '%s'\n", frame->argv[0]);
-    _exit (1);
+    frame->pid = getpid ();
+
+    int retval = frame->at_fork_cb (frame, this, frame->parent);
+
+    if (retval is NOTOK)
+      goto theerror;
+
+    ifnot (retval)
+      return 0;
+
+    if (retval is 1) {
+      execvp (frame->argv[0], frame->argv);
+
+      fprintf (stderr, "execvp() failed for command: '%s'\n", frame->argv[0]);
+      _exit (1);
+    }
   }
 
-  frame->fd = fd;
-  signal (SIGWINCH, vwm_sigwinch_handler);
-  return frame->pid;
+  goto theend;
 
 theerror:
   ifnot (-1 is frame->pid) {
+    kill (frame->pid, SIGHUP);
     waitpid (frame->pid, NULL, 0);
-    frame->pid = -1;
   }
+
+  frame->pid = -1;
+  frame->fd = -1;
 
   ifnot (-1 is fd) close (fd);
 
+theend:
   signal (SIGWINCH, vwm_sigwinch_handler);
   return frame->pid;
 }
@@ -3685,13 +3739,12 @@ static int vwm_main (vwm_t *this) {
 
   Vwin.set.separators (win, DRAW);
 
-  vwm_frame *frame = win->current;
+  vwm_frame *frame = win->head;
   while (frame) {
     if (frame->argv is NULL)
       Vframe.set.command (frame, $my(default_app)->bytes);
 
-    if (frame->pid is -1)
-      Vframe.fork (frame);
+    Vframe.fork (frame);
 
     frame = frame->next;
   }
@@ -3796,7 +3849,7 @@ check_length:
 
         Vwin.set.frame (win, frame);
 
-        frame->process_output (frame, output_buf, output_len);
+        frame->process_output_cb (frame, output_buf, output_len);
       }
 
       next_frame:
@@ -3814,12 +3867,12 @@ check_length:
   return NOTOK;
 }
 
-static int vwm_default_on_tab_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+static int vwm_default_on_tab_cb (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
   (void) this; (void) win; (void) frame; (void) object;
   return OK;
 }
 
-static int vwm_default_rline_callback (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
+static int vwm_default_rline_cb (vwm_t *this, vwm_win *win, vwm_frame *frame, void *object) {
   (void) this; (void) win; (void) frame; (void) object;
   return OK;
 }
@@ -3851,14 +3904,14 @@ getc_again:
       break;
 
     case '\t': {
-        int retval = $my(on_tab_callback) (this, win, frame, $my(objects)[VWMED_OBJECT]);
+        int retval = $my(on_tab_cb) (this, win, frame, $my(objects)[VWMED_OBJECT]);
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
       }
       break;
 
     case ':': {
-        int retval = $my(rline_callback) (this, win, frame, $my(objects)[VWMED_OBJECT]);
+        int retval = $my(rline_cb) (this, win, frame, $my(objects)[VWMED_OBJECT]);
         if (retval is VWM_QUIT or ($my(state) & VWM_QUIT))
           return VWM_QUIT;
 
@@ -4068,9 +4121,9 @@ public vwm_t *__init_vwm__ (void) {
         .object_at = vwm_set_object_at,
         .current_at = vwm_set_current_at,
         .default_app = vwm_set_default_app,
-        .rline_callback =  vwm_set_rline_callback,
-        .on_tab_callback = vwm_set_on_tab_callback,
-        .edit_file_callback = vwm_set_edit_file_callback
+        .rline_cb =  vwm_set_rline_cb,
+        .on_tab_cb = vwm_set_on_tab_cb,
+        .edit_file_cb = vwm_set_edit_file_cb
       },
       .new = (vwm_new_self) {
         .win = vwm_new_win,
@@ -4127,18 +4180,25 @@ public vwm_t *__init_vwm__ (void) {
       .kill_proc = frame_kill_proc,
       .release_log = frame_release_log,
       .release_argv = frame_release_argv,
-      .process_output = frame_process_output,
+      .process_output = frame_process_output_cb,
       .get = (vwm_frame_get_self) {
         .fd = frame_get_fd,
-        .pid = frame_get_pid
+        .pid = frame_get_pid,
+        .argc = frame_get_argc,
+        .argv = frame_get_argv,
+        .root = frame_get_root,
+        .logfd = frame_get_logfd,
+        .logfile = frame_get_logfile,
+        .parent = frame_get_parent
       },
       .set = (vwm_frame_set_self) {
         .fd = frame_set_fd,
         .log = frame_set_log,
         .argv = frame_set_argv,
         .command = frame_set_command,
-        .unimplemented = frame_set_unimplemented,
-        .process_output = frame_set_process_output
+        .at_fork_cb = frame_set_at_fork_cb,
+        .unimplemented_cb = frame_set_unimplemented_cb,
+        .process_output_cb = frame_set_process_output_cb
       }
     },
     .prop = prop
@@ -4158,9 +4218,9 @@ public vwm_t *__init_vwm__ (void) {
   $my(objects)[VWMED_OBJECT] = NULL;
 
   self(new.term);
-  self(set.rline_callback, vwm_default_rline_callback);
-  self(set.on_tab_callback, vwm_default_on_tab_callback);
-  self(set.edit_file_callback, vwm_default_edit_file_callback);
+  self(set.rline_cb, vwm_default_rline_cb);
+  self(set.on_tab_cb, vwm_default_on_tab_cb);
+  self(set.edit_file_cb, vwm_default_edit_file_cb);
   self(set.tmpdir, NULL, 0);
 
   VWM = this;

@@ -90,7 +90,6 @@ struct vtach_prop {
   PtyOnExecChild_cb exec_child_cb;
 };
 
-#define BUFSIZE 4096
 #define EOS "\033[999H"
 
 static int win_changed;
@@ -354,7 +353,7 @@ private int vtach_tty_main (vtach_t *this) {
       ssize_t len = read (s, buf, sizeof (buf));
 
       if (len is 0) {
-        fprintf (stderr, EOS "\r\n[EOF - dtach terminating]\r\n");
+        fprintf (stderr, EOS "\r\n[EOF - terminating]\r\n");
         break;
       } else if (len < 0) {
         fprintf (stderr, EOS "\r\n[read returned an error]\r\n");

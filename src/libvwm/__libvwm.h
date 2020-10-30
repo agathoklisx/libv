@@ -314,20 +314,3 @@ do {                                                                \
   (list)->length++;                                                 \
   (list)->current;                                                  \
 })
-
-#define STR_FMT_(fmt_, ...)                                            \
-({                                                                    \
-  char buf_[MAXLEN_LINE];                                             \
-  snprintf (buf_, MAXLEN_LINE, fmt_, __VA_ARGS__);                    \
-  buf_;                                                               \
-})
-
-#define debug_append(fmt, ...)                            \
-({                                                        \
-  char *file_ = STR_FMT_ ("/tmp/%s.debug", __func__);      \
-  FILE *fp_ = fopen (file_, "a+");                        \
-  if (fp_ isnot NULL) {                                   \
-    fprintf (fp_, (fmt), ## __VA_ARGS__);                 \
-    fclose (fp_);                                         \
-  }                                                       \
-})

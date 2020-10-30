@@ -232,15 +232,15 @@ private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *obj
   return retval;
 }
 
-private int vwm_tab_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
+private int vwmed_tab_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
   return vwm_new_rline (vwm, win, frame, object, 1);
 }
 
-private int vwm_rline_callback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
+private int vwmed_rline_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
   return vwm_new_rline (vwm, win, frame, object, 0);
 }
 
-private int vwm_edit_file_callback (vwm_t *vwm, char *file, void *object) {
+private int vwmed_edit_file_cb (vwm_t *vwm, char *file, void *object) {
   vwmed_t *this = (vwmed_t *) object;
 
   ed_t *ed = E.new ($my(__E__), QUAL(ED_INIT,
@@ -349,9 +349,9 @@ private int vwmed_init_ved (vwmed_t *this) {
   $my(orig_topline) = Ed.set.topline;
   Ed.set.topline = ed_set_topline_void;
 
-  Vwm.set.rline_callback ($my(vwm), vwm_rline_callback);
-  Vwm.set.on_tab_callback ($my(vwm), vwm_tab_callback);
-  Vwm.set.edit_file_callback ($my(vwm), vwm_edit_file_callback);
+  Vwm.set.rline_cb ($my(vwm), vwmed_rline_cb);
+  Vwm.set.on_tab_cb ($my(vwm), vwmed_tab_cb);
+  Vwm.set.edit_file_cb ($my(vwm), vwmed_edit_file_cb);
 
   return OK;
 }

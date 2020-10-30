@@ -145,10 +145,11 @@ private string_t *v_make_sockname (v_t *this, char *sockdir, char *as) {
         goto theerror;
       }
 
-      if (-1 is access (sockname->bytes, W_OK|R_OK|X_OK)) {
+      ifnot (File.is_rwx (sockname->bytes)) {
         fprintf (stderr, "%s: insufficient permissions\n", sockname->bytes);
         goto theerror;
       }
+
     } else {
       if (-1 is mkdir (sockname->bytes, S_IRWXU)) {
         fprintf (stderr, "%s: can not make directory\n", sockname->bytes);
@@ -426,6 +427,9 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
 
   $my(vtach) = vtach;
   $my(vwmed) = vwmed;
+  $my(objects)[VTACH_OBJECT] = vtach;
+  $my(objects)[VWMED_OBJECT] = vwmed;
+  $my(objects)[VWM_OBJECT] = vwm;
 
   Vwm.set.object_at (vwm, this, V_OBJECT);
 
