@@ -52,7 +52,7 @@ int main (int argc, char **argv) {
 
   Vwm.set.size (this, rows, cols, 1);
 
-  vwm_win *win = Vwm.new.win (this, "v", WinNewOpts (
+  vwm_win *win = Vwm.new.win (this, "v", WinOpts (
     .rows = rows,
     .cols = cols,
     .num_frames = 2,
@@ -60,7 +60,7 @@ int main (int argc, char **argv) {
 
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   if (argc > 1)
-    Vframe.set.argv (frame, argc-1, argv + 1);
+     Vframe.set.argv (frame, argc-1, argv + 1);
 
   Vframe.set.log (frame, NULL, 1);
 
@@ -69,7 +69,7 @@ int main (int argc, char **argv) {
   Vframe.set.argv (frame, 1, largv);
   Vframe.set.log (frame, NULL, 1);
 
-  win = Vwm.new.win (this, NULL, WinNewOpts (
+  win = Vwm.new.win (this, NULL, WinOpts (
     .rows =rows,
     .cols = cols,
     .num_frames = 1,

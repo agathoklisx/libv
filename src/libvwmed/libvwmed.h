@@ -7,8 +7,8 @@ typedef struct vwmed_t vwmed_t;
 typedef struct vwmed_prop vwmed_prop;
 
 typedef struct vwmed_get_self {
-  vwm_t *(*vwm) (vwmed_t *);
-  E_T   *(*e) (vwmed_t *);
+  E_T  *(*e) (vwmed_t *);
+  void *(*object) (vwmed_t *, int);
 } vwmed_get_self;
 
 typedef struct vwmed_init_self {

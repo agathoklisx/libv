@@ -15,7 +15,7 @@
 #define V v->self
 
 int main (int argc, char **argv) {
-  v_init_opts opts = V_INIT_OPTS(
+  v_opts opts = VOpts(
     .argc = argc,
     .argv = argv
   );

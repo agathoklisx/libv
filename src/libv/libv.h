@@ -27,10 +27,10 @@ typedef struct v_init_opts {
 
   VExecChild at_exec_child;
   VPtyMain at_pty_main;
-} v_init_opts;
+} v_opts;
 
-#define V_INIT_OPTS(...)   \
-  (v_init_opts) {          \
+#define VOpts(...)         \
+  (v_opts) {               \
   .as = NULL,              \
   .data = NULL,            \
   .sockname = NULL,        \
@@ -49,15 +49,12 @@ typedef struct v_init_opts {
 }
 
 typedef struct v_get_self {
-  vwm_t *(*vwm) (v_t *);
-  vtach_t *(*vtach) (v_t *);
-  vwmed_t *(*vwmed) (v_t *);
   char *(*sockname) (v_t *);
-  void *(*object_at) (v_t *, int);
+  void *(*object) (v_t *, int);
 } v_get_self;
 
 typedef struct v_set_self {
-  void (*object_at) (v_t *, void *, int);
+  void (*object) (v_t *, void *, int);
 } v_set_self;
 
 typedef struct v_self {
@@ -74,5 +71,5 @@ typedef struct v_t {
   v_prop *prop;
 } v_t;
 
-public v_t *__init_v__ (vwm_t *, v_init_opts *);
+public v_t *__init_v__ (vwm_t *, v_opts *);
 public void __deinit_v__ (v_t **);

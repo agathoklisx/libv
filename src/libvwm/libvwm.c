@@ -154,9 +154,11 @@ typedef struct dirlist_t dirlist_t;
 
 struct dirlist_t {
   char **list;
-  int len;
+  int
+    len,
+    retval;
+
   size_t size;
-  int retval;
   char dir[PATH_MAX];
   void (*free) (dirlist_t *dlist);
 };
@@ -164,7 +166,7 @@ struct dirlist_t {
 typedef struct tmpname_t tmpname_t;
 struct tmpname_t {
   int fd;
-  char fname[PATH_MAX];
+  string_t *fname;
  };
 
 typedef string_t *(*FrameProcessChar_cb) (vwm_frame *, string_t *, int);
@@ -203,8 +205,8 @@ struct vwm_frame {
     saved_row_pos,
     saved_col_pos,
     old_attribute,
-    **videomem,
     **colors,
+    **videomem,
     *tabstops,
     *esc_param,
     *cur_param;
@@ -222,16 +224,15 @@ struct vwm_frame {
   FrameUnimplemented_cb unimplemented_cb;
   FrameAtFork_cb        at_fork_cb;
 
-  vwm_win *parent;
   vwm_t   *root;
+  vwm_win *parent;
 
-  vwm_frame_self self;
   vwm_win_self   win;
+  vwm_frame_self self;
 
   vwm_frame
     *next,
     *prev;
-
 };
 
 struct vwm_win {
@@ -280,14 +281,18 @@ struct vwm_win {
 struct vwm_prop {
   vwm_term  *term;
 
-  char *tmpdir;
+  char
+    mode_key,
+    *tmpdir;
 
   string_t
     *default_app,
     *shell,
     *editor;
 
-  char mode_key;
+  FILE
+    *unimplemented_fp,
+    *sequences_fp;
 
   int
     state,
@@ -314,6 +319,9 @@ struct vwm_prop {
   VwmOnTab_cb on_tab_cb;
   VwmRLine_cb rline_cb;
   VwmEditFile_cb edit_file_cb;
+
+  int num_at_exit_cbs;
+  VwmAtExit_cb *at_exit_cbs;
 };
 
 static void vwm_sigwinch_handler (int sig);
@@ -474,6 +482,22 @@ static int cstring_eq (const char *sa, const char *sb) {
   return 0;
 }
 
+static int cstring_cmp_n (const char *sa, const char *sb, size_t n) {
+  const uchar *spa = (const uchar *) sa;
+  const uchar *spb = (const uchar *) sb;
+  for (;n--; spa++, spb++) {
+    if (*spa != *spb)
+      return (*(uchar *) spa - *(uchar *) spb);
+
+    if (*spa == 0) return 0;
+  }
+
+  return 0;
+}
+
+static int cstring_eq_n  (const char *sa, const char *sb, size_t n) {
+  return (0 == cstring_cmp_n (sa, sb, n));
+}
 static size_t string_align (size_t size) {
   size_t sz = 8 - (size % 8);
   sz = sizeof (char) * (size + (sz < 8 ? sz : 0));
@@ -486,6 +510,12 @@ static string_t *string_reallocate (string_t *this, size_t size) {
   this->bytes = Realloc (this->bytes, sz);
   this->mem_size = sz;
   return this;
+}
+
+static void string_free (string_t *this) {
+  if (this is NULL) return;
+  if (this->mem_size) free (this->bytes);
+  free (this);
 }
 
 static string_t *string_new (size_t size) {
@@ -621,11 +651,20 @@ static dirlist_t dir_list (char *dir) {
   return dlist;
 }
 
+static void tmpfname_free (tmpname_t *this) {
+  ifnot (this) return;
+  ifnot (NULL is this->fname) {
+    unlink (this->fname->bytes);
+    string_free (this->fname);
+    this->fname = NULL;
+  }
+}
+
 static tmpname_t tmpfname (char *dname, char *prefix) {
   static unsigned int see = 12252;
   tmpname_t t;
   t.fd = -1;
-  t.fname[0] = '\0';
+  t.fname = NULL;
 
   ifnot (dir_is_directory (dname))
     return t;
@@ -642,9 +681,8 @@ static tmpname_t tmpfname (char *dname, char *prefix) {
   srand ((uint) time (NULL) + (uint) pid + see++);
 
   dirlist_t dlist = dir_list (dname);
-  if (NOTOK is dlist.retval) {
+  if (NOTOK is dlist.retval)
     return t;
-  }
 
   int
     found = 0,
@@ -695,7 +733,7 @@ again:
       goto theend;
     }
 
-  cstring_cp (t.fname, len + 1, name, len);
+  t.fname = string_new_with_len (name, len);
   }
 
 theend:
@@ -718,10 +756,14 @@ static vwm_term *vwm_new_term (vwm_t *this) {
     fprintf (stderr, "TERM environment variable isn't set\n");
     term->name = strdup ("vt100");
   } else {
-    if (cstring_eq (term_name, "xterm"))
+    if (cstring_eq (term_name, "linux"))
+      term->name = strdup ("linux");
+    else if (cstring_eq_n (term_name, "xterm", 5))
+      term->name = strdup ("xterm");
+    else if (cstring_eq_n (term_name, "rxvt-unicode", 12))
       term->name = strdup ("xterm");
     else
-      term->name = strdup ("vt100");
+      term->name = strdup (term_name);
   }
 
   $my(term) = term;
@@ -773,8 +815,8 @@ static int term_orig_mode (vwm_term *this) {
 }
 
 static int term_raw_mode (vwm_term *this) {
-   if (this->mode == 'r') return OK;
-   if (isnotatty (this->in_fd)) return NOTOK;
+  if (this->mode == 'r') return OK;
+  if (isnotatty (this->in_fd)) return NOTOK;
 
   while (NOTOK == tcgetattr (this->in_fd, &this->orig_mode))
     if (errno == EINTR) return NOTOK;
@@ -860,6 +902,19 @@ static void term_init_size (vwm_term *this, int *rows, int *cols) {
   term_cursor_set_ptr_pos (this, orig_row, orig_col);
 }
 
+static void vwm_set_at_exit_cb (vwm_t *this, VwmAtExit_cb cb) {
+  if (NULL is cb) return;
+
+  $my(num_at_exit_cbs)++;
+
+  ifnot ($my(num_at_exit_cbs) - 1)
+    $my(at_exit_cbs) = Alloc (sizeof (VwmAtExit_cb));
+  else
+    $my(at_exit_cbs) = Realloc ($my(at_exit_cbs), sizeof (VwmAtExit_cb) * $my(num_at_exit_cbs));
+
+  $my(at_exit_cbs)[$my(num_at_exit_cbs) -1] = cb;
+}
+
 static void vwm_set_size (vwm_t *this, int rows, int cols, int first_col) {
   $my(num_rows) = rows;
   $my(num_cols) = cols;
@@ -894,7 +949,7 @@ static void vwm_set_on_tab_cb (vwm_t *this, VwmOnTab_cb cb) {
   $my(on_tab_cb) = cb;
 }
 
-static void vwm_set_object_at (vwm_t *this, void *object, int idx) {
+static void vwm_set_object (vwm_t *this, void *object, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return;
   $my(objects)[idx] = object;
 }
@@ -913,6 +968,26 @@ static void vwm_set_shell (vwm_t *this, char *shell) {
   ifnot (len) return;
   string_clear ($my(shell));
   string_append_with_len ($my(shell), shell, len);
+}
+
+static void vwm_unset_debug_sequences (vwm_t *this) {
+  if (NULL is $my(sequences_fp)) return;
+  fclose ($my(sequences_fp));
+  $my(sequences_fp) = NULL;
+}
+
+static void vwm_set_debug_sequences (vwm_t *this, char *fname) {
+  ifnot (NULL is $my(sequences_fp)) return;
+
+  if (NULL is fname) {
+    tmpname_t t = tmpfname ($my(tmpdir), "libvwm_sequences");
+    if (-1 is t.fd)  return;
+
+    $my(sequences_fp) = fdopen (t.fd, "w+");
+
+    tmpfname_free (&t);
+  } else
+    $my(sequences_fp) = fopen (fname, "w");
 }
 
 /* This is an extended version of the same function of the kilo editor at:
@@ -1125,9 +1200,13 @@ static int vwm_get_columns (vwm_t *this) {
   return $my(term)->columns;
 }
 
-static void *vwm_get_object_at (vwm_t *this, int idx) {
+static void *vwm_get_object (vwm_t *this, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return NULL;
   return $my(objects)[idx];
+}
+
+static char *vwm_get_tmpdir (vwm_t *this) {
+  return $my(tmpdir);
 }
 
 static int vwm_get_num_wins (vwm_t *this) {
@@ -1168,6 +1247,60 @@ static char *vwm_get_editor (vwm_t *this) {
 
 static char *vwm_get_default_app (vwm_t *this) {
   return $my(default_app)->bytes;
+}
+
+static void vwm_release_info (vwm_t *this, vwm_info **vinfop) {
+  (void) this;
+  if (*vinfop is NULL) return;
+
+  vwm_info *vinfo = *vinfop;
+
+  for (int widx = 0; widx < vinfo->num_win; widx++) {
+    vwin_info *winfo = vinfo->wins[widx++];
+
+    for (int fidx = 0; fidx < winfo->num_frames; fidx++)
+      free (winfo->frames[fidx++]);
+
+    free (winfo->frames);
+    free (winfo);
+  }
+
+  free (vinfo->wins);
+  free (vinfo);
+  *vinfop = NULL;
+}
+
+static vwm_info *vwm_get_info (vwm_t *this) {
+  vwm_info *vinfo = Alloc (sizeof (vwm_info));
+  vinfo->pid = getpid ();
+  vinfo->num_win = $my(length);
+
+  vinfo->wins = Alloc (sizeof (vwin_info *) * $my(length));
+  vwm_win *win = $my(head);
+  int idx = 0;
+  while (win and idx < vinfo->num_win) {
+    vwin_info *winfo = Alloc (sizeof (vwin_info));
+    vinfo->wins[idx++] = winfo;
+    winfo->num_frames = win->length;
+    winfo->frames = Alloc (sizeof (vframe_info) * win->length);
+    vwm_frame *frame = win->head;
+    int fidx = 0;
+    while (frame and fidx < win->length) {
+      vframe_info *finfo = Alloc (sizeof (vframe_info));
+      winfo->frames[fidx++] = finfo;
+      finfo->pid = frame->pid;
+      int arg = 0;
+      for (; arg < frame->argc; arg++)
+        finfo->argv[arg] = frame->argv[arg];
+      finfo->argv[arg] = NULL;
+
+      frame = frame->next;
+    }
+
+    win = win->next;
+  }
+  return vinfo;
+
 }
 
 static vwm_win *vwm_pop_win_at (vwm_t *this, int idx) {
@@ -1222,149 +1355,6 @@ static int vt_video_line_to_str (int *line, char *buf, int len) {
   return idx;
 }
 
-static void vt_video_add_log_lines (vwm_frame *this) {
-  struct stat st;
-  if (-1 is this->logfd or -1 is fstat (this->logfd, &st))
-    return;
-
-  int size = st.st_size;
-
-  char *mbuf = mmap (0, size, PROT_READ, MAP_SHARED, this->logfd, 0);
-
-  if (NULL is mbuf) return;
-
-  char *buf = mbuf + size - 1;
-
-  int lines = this->num_rows;
-
-  for (int i = 0; i < lines; i++)
-    for (int j = 0; j < this->num_cols; j++)
-      this->videomem[i][j] = 0;
-
-  while (lines isnot 0 and size) {
-    char b[BUFSIZE];
-    char c;
-    int rbts = 0;
-    while (--size) {
-      c = *--buf;
-
-      if (c is '\n') break;
-
-      ifnot (c) continue;
-      b[rbts++] = c;
-    }
-
-    b[rbts] = '\0';
-
-    int blen = bytelen (b);
-
-    char nbuf[blen + 1];
-    for (int i = 0; i < blen; i++)
-      nbuf[i] = b[blen - i - 1];
-
-    nbuf[blen] = '\0';
-
-    int idx = 0;
-    for (int i = 0; i < this->num_cols; i++) {
-      if (idx >= blen) break;
-
-      this->videomem[lines-1][i] =
-         (int) ustring_to_code (nbuf, &idx);
-    }
-
-    lines--;
-  }
-
-  ftruncate (this->logfd, size);
-  lseek (this->logfd, size, SEEK_SET);
-  munmap (0, st.st_size);
-}
-
-static void vt_video_erase (vwm_frame *frame, int x1, int x2, int y1, int y2) {
-  int i, j;
-
-  for (i = x1 - 1; i < x2; ++i)
-    for (j = y1 - 1; j < y2; ++j) {
-      frame->videomem[i][j] = 0;
-      frame->colors  [i][j] = COLOR_FG_NORM;
-    }
-}
-
-static void vt_frame_video_rshift (vwm_frame *frame, int numcols) {
-  for (int i = frame->num_cols - 1; i > frame->col_pos - 1; --i) {
-    if (i - numcols >= 0) {
-      frame->videomem[frame->row_pos-1][i] = frame->videomem[frame->row_pos-1][i-numcols];
-      frame->colors[frame->row_pos-1][i] = frame->colors[frame->row_pos-1][i-numcols];
-    } else {
-      frame->videomem[frame->row_pos-1][i] = 0;
-      frame->colors [frame->row_pos-1][i] = COLOR_FG_NORM;
-    }
-  }
-}
-
-static void vt_video_scroll (vwm_frame *frame, int numlines) {
-  int *tmpvideo;
-  int *tmpcolors;
-  int n;
-
-  for (int i = 0; i < numlines; i++) {
-    tmpvideo = frame->videomem[frame->scroll_first_row - 1];
-    tmpcolors = frame->colors[frame->scroll_first_row - 1];
-
-    ifnot (NULL is frame->logfile) {
-      char buf[(frame->num_cols * 3) + 2];
-      int len = vt_video_line_to_str (tmpvideo, buf, frame->num_cols);
-      fd_write (frame->logfd, buf, len);
-    }
-
-    for (int j = 0; j < frame->num_cols; j++) {
-      tmpvideo[j] = 0;
-      tmpcolors[j] = COLOR_FG_NORM;
-    }
-
-    for (n = frame->scroll_first_row - 1; n < frame->last_row - 1; n++) {
-      frame->videomem[n] = frame->videomem[n + 1];
-      frame->colors[n] = frame->colors[n + 1];
-    }
-
-    frame->videomem[n] = tmpvideo;
-    frame->colors[n] = tmpcolors;
-  }
-}
-
-static void vt_video_scroll_back (vwm_frame *frame, int numlines) {
-  if (frame->row_pos < frame->scroll_first_row)
-    return;
-
-  int n;
-  int *tmpvideo;
-  int *tmpcolors;
-
-  for (int i = 0; i < numlines; i++) {
-    tmpvideo = frame->videomem[frame->last_row - 1];
-    tmpcolors = frame->colors[frame->last_row - 1];
-
-    for (int j = 0; j < frame->num_cols; j++) {
-      tmpvideo[j] = 0;
-      tmpcolors[j] = COLOR_FG_NORM;
-    }
-
-   for (n = frame->last_row - 1; n > frame->scroll_first_row - 1; --n) {
-      frame->videomem[n] = frame->videomem[n - 1];
-      frame->colors[n] = frame->colors[n - 1];
-    }
-
-    frame->videomem[n] = tmpvideo;
-    frame->colors[n] = tmpcolors;
-  }
-}
-
-static void vt_video_add (vwm_frame *frame, utf8 c) {
-  frame->videomem[frame->row_pos - 1][frame->col_pos - 1] = c;
-  frame->videomem[frame->row_pos - 1][frame->col_pos - 1] |=
-      (((int) frame->textattr) << 8);
-}
-
 static void vt_write (char *buf, FILE *fp) {
   fprintf (fp, "%s", buf);
   fflush (fp);
@@ -1379,23 +1369,23 @@ static string_t *vt_insertchar (string_t *buf, int numcols) {
 }
 
 static string_t *vt_savecursor (string_t *buf) {
-  return string_append (buf, "\0337");
+  return string_append_with_len (buf, "\0337", 2);
 }
 
 static string_t *vt_restcursor (string_t *buf) {
-  return string_append (buf, "\0338");
+  return string_append_with_len (buf, "\0338", 2);
 }
 
 static string_t *vt_clreol (string_t *buf) {
-  return string_append (buf, "\033[K");
+  return string_append_with_len (buf, "\033[K", 3);
 }
 
 static string_t *vt_clrbgl (string_t *buf) {
-  return string_append (buf, "\033[1K");
+  return string_append_with_len (buf, "\033[1K", 4);
 }
 
 static string_t *vt_clrline (string_t *buf) {
-  return string_append (buf, "\033[2K");
+  return string_append_with_len (buf, "\033[2K", 4);
 }
 
 static string_t *vt_delunder (string_t *buf, int num) {
@@ -1407,7 +1397,7 @@ static string_t *vt_delline (string_t *buf, int num) {
 }
 
 static string_t *vt_attr_reset (string_t *buf) {
-  return string_append (buf, "\033[m");
+  return string_append_with_len (buf, "\033[m", 3);
 }
 
 static string_t *vt_reverse (string_t *buf, int on) {
@@ -1431,7 +1421,7 @@ static string_t *vt_blink (string_t *buf, int on) {
 }
 
 static string_t *vt_bell (string_t *buf) {
-  return string_append (buf, "\007");
+  return string_append_with_len (buf, "\007", 1);
 }
 
 static string_t *vt_setfg (string_t *buf, int color) {
@@ -1458,13 +1448,17 @@ static string_t *vt_down (string_t *buf, int numrows) {
   return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dB", numrows));
 }
 
+static string_t *vt_irm (string_t *buf) {
+  return string_append_with_len (buf, "\033[4l", 4);
+}
+
 static string_t *vt_revscroll (string_t *buf) {
-  return string_append (buf, "\033M");
+  return string_append_with_len (buf, "\033M", 2);
 }
 
 static string_t *vt_setscroll (string_t *buf, int first, int last) {
   if (0 is first and 0 is last)
-    return string_append (buf, "\033[r");
+    return string_append_with_len (buf, "\033[r", 3);
   else
     return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
 }
@@ -1585,6 +1579,114 @@ static string_t *vt_attr_set (string_t *buf, int textattr) {
   return buf;
 }
 
+static void vt_video_add (vwm_frame *frame, utf8 c) {
+  frame->videomem[frame->row_pos - 1][frame->col_pos - 1] = c;
+  frame->videomem[frame->row_pos - 1][frame->col_pos - 1] |=
+      (((int) frame->textattr) << 8);
+}
+
+static void vt_video_erase (vwm_frame *frame, int x1, int x2, int y1, int y2) {
+  int i, j;
+
+  for (i = x1 - 1; i < x2; ++i)
+    for (j = y1 - 1; j < y2; ++j) {
+      frame->videomem[i][j] = 0;
+      frame->colors  [i][j] = COLOR_FG_NORM;
+    }
+}
+
+static void vt_frame_video_rshift (vwm_frame *frame, int numcols) {
+  for (int i = frame->num_cols - 1; i > frame->col_pos - 1; --i) {
+    if (i - numcols >= 0) {
+      frame->videomem[frame->row_pos-1][i] = frame->videomem[frame->row_pos-1][i-numcols];
+      frame->colors[frame->row_pos-1][i] = frame->colors[frame->row_pos-1][i-numcols];
+    } else {
+      frame->videomem[frame->row_pos-1][i] = 0;
+      frame->colors [frame->row_pos-1][i] = COLOR_FG_NORM;
+    }
+  }
+}
+
+static string_t *vt_frame_ech (vwm_frame *frame, string_t *buf, int num_cols) {
+  for (int i = 0; i + frame->col_pos <= frame->num_cols and i < num_cols; i++) {
+    frame->videomem[frame->row_pos-1][frame->col_pos - i - 1] = 0;
+    frame->colors[frame->row_pos-1][frame->col_pos - i - 1] = COLOR_FG_NORM;
+  }
+
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dX", num_cols));
+}
+
+/*
+static string_t *vt_frame_cha (vwm_frame *frame, string_t *buf, int param) {
+  if (param < 2)
+    frame->col_pos = 1;
+  else {
+    if (param > frame->num_cols)
+      param = frame->num_cols;
+    frame->col_pos = param;
+  }
+
+  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dG", param));
+}
+*/
+
+static void vt_frame_video_scroll (vwm_frame *frame, int numlines) {
+  int *tmpvideo;
+  int *tmpcolors;
+  int n;
+
+  for (int i = 0; i < numlines; i++) {
+    tmpvideo = frame->videomem[frame->scroll_first_row - 1];
+    tmpcolors = frame->colors[frame->scroll_first_row - 1];
+
+    ifnot (NULL is frame->logfile) {
+      char buf[(frame->num_cols * 3) + 2];
+      int len = vt_video_line_to_str (tmpvideo, buf, frame->num_cols);
+      fd_write (frame->logfd, buf, len);
+    }
+
+    for (int j = 0; j < frame->num_cols; j++) {
+      tmpvideo[j] = 0;
+      tmpcolors[j] = COLOR_FG_NORM;
+    }
+
+    for (n = frame->scroll_first_row - 1; n < frame->last_row - 1; n++) {
+      frame->videomem[n] = frame->videomem[n + 1];
+      frame->colors[n] = frame->colors[n + 1];
+    }
+
+    frame->videomem[n] = tmpvideo;
+    frame->colors[n] = tmpcolors;
+  }
+}
+
+static void vt_frame_video_scroll_back (vwm_frame *frame, int numlines) {
+  if (frame->row_pos < frame->scroll_first_row)
+    return;
+
+  int n;
+  int *tmpvideo;
+  int *tmpcolors;
+
+  for (int i = 0; i < numlines; i++) {
+    tmpvideo = frame->videomem[frame->last_row - 1];
+    tmpcolors = frame->colors[frame->last_row - 1];
+
+    for (int j = 0; j < frame->num_cols; j++) {
+      tmpvideo[j] = 0;
+      tmpcolors[j] = COLOR_FG_NORM;
+    }
+
+   for (n = frame->last_row - 1; n > frame->scroll_first_row - 1; --n) {
+      frame->videomem[n] = frame->videomem[n - 1];
+      frame->colors[n] = frame->colors[n - 1];
+    }
+
+    frame->videomem[n] = tmpvideo;
+    frame->colors[n] = tmpcolors;
+  }
+}
+
 static string_t *vt_frame_attr_set (vwm_frame *frame, string_t *buf) {
   uchar on = NORMAL;
   vt_attr_reset (buf);
@@ -1596,7 +1698,7 @@ static string_t *vt_append (vwm_frame *frame, string_t *buf, utf8 c) {
     if (frame->row_pos < frame->last_row)
       frame->row_pos++;
     else
-      vt_video_scroll (frame, 1);
+      vt_frame_video_scroll (frame, 1);
 
     string_append (buf, "\r\n");
     frame->col_pos = 1;
@@ -1834,6 +1936,7 @@ static string_t *vt_esc_pound (vwm_frame *frame, string_t *buf, int c) {
 
 static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
   int idx;
+
   switch (c) {
     case 0: /* Turn all attributes off */
       frame->textattr = NORMAL;
@@ -1902,6 +2005,8 @@ static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
       vt_reverse (buf, 0);
       break;
 
+    case 39:
+      c = 30;
     case 30 ... 37:
       vt_setfg (buf, c);
       idx = frame->num_cols - frame->col_pos + 1;
@@ -1911,11 +2016,13 @@ static string_t *vt_process_m (vwm_frame *frame, string_t *buf, int c) {
 
       break;
 
+    case 49:
+      c = 47;
     case 40 ... 47:
       vt_setbg (buf, c);
       break;
 
-    default: /* Unknown escape */
+    default:
       frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
       break;
   }
@@ -1945,6 +2052,8 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
 
     case '?': /* Format should be \E[?<n> */
       if (*frame->cur_param) {
+
+frame->unimplemented_cb (frame, "brace why", c, frame->esc_param[0]);
         vt_frame_esc_set (frame);
       } else {
         frame->process_char_cb = vt_esc_brace_q;
@@ -1953,8 +2062,8 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
       return buf;
 
     case ';':
-      if (++frame->param_idx < MAX_PARAMS)
-        frame->cur_param = &frame->esc_param[frame->param_idx];
+      if (frame->param_idx + 1 < MAX_PARAMS)
+        frame->cur_param = &frame->esc_param[++frame->param_idx];
       return buf;
 
     case 'h': /* Set modes */
@@ -1971,8 +2080,11 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
 
     case 'l': /* Reset modes */
       switch (frame->esc_param[0]) {
-        case 2:  /* Unlock keyboard */
         case 4:  /* Character overstrike mode */
+          vt_irm (buf); /* (ADDITION - unverified) */
+          break;
+
+        case 2:  /* Unlock keyboard */
         case 12: /* Local echo off */
         case 20: /* <Return> = CR-LF */
         default:
@@ -2012,266 +2124,289 @@ static string_t *vt_esc_brace (vwm_frame *frame, string_t *buf, int c) {
       vt_goto (buf, frame->row_pos + frame->first_row - 1, 1);
       break;
 
-      case 'A': /* Cursor UP */
-        if (frame->row_pos is frame->first_row)
-          break;
-
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
-
-        newx = (frame->row_pos - frame->esc_param[0]);
-
-        if (newx > frame->scroll_first_row) {
-          frame->row_pos = newx;
-          vt_up (buf, frame->esc_param[0]);
-        } else {
-          frame->row_pos = frame->scroll_first_row;
-          vt_goto (buf, frame->row_pos + frame->first_row - 1,
-            frame->col_pos);
-        }
+    case 'A': /* Cursor UP */
+      if (frame->row_pos is frame->first_row)
         break;
 
-      case 'B': /* Cursor DOWN */
-        if (frame->row_pos is frame->last_row)
-          break;
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
 
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
+      newx = (frame->row_pos - frame->esc_param[0]);
 
-        newx = frame->row_pos + frame->esc_param[0];
-
-        if (newx <= frame->last_row) {
-          frame->row_pos = newx;
-          vt_down (buf, frame->esc_param[0]);
-        } else {
-          frame->row_pos = frame->last_row;
-          vt_goto (buf, frame->row_pos + frame->first_row - 1,
-            frame->col_pos);
-        }
-        break;
-
-      case 'C': /* Cursor RIGHT */
-        if (frame->col_pos is frame->num_cols)
-          break;
-
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
-
-        newy = (frame->col_pos + frame->esc_param[0]);
-
-        if (newy < frame->num_cols) {
-          frame->col_pos = newy;
-
-          vt_right (buf, frame->esc_param[0]);
-        } else {
-          frame->col_pos = frame->num_cols;
-          vt_goto (buf, frame->row_pos + frame->first_row - 1,
-            frame->col_pos);
-        }
-        break;
-
-      case 'D': /* Cursor LEFT */
-        if (frame->col_pos is 1)
-          break;
-
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
-
-        newy = (frame->col_pos - frame->esc_param[0]);
-
-        if (newy > 1) {
-          frame->col_pos = newy;
-          vt_left (buf, frame->esc_param[0]);
-        } else {
-          frame->col_pos = 1;
-          string_append (buf, "\r");
-        }
-
-        break;
-
-      case 'f':
-      case 'H': /* Move cursor to coordinates */
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
-
-        ifnot (frame->esc_param[1])
-          frame->esc_param[1] = 1;
-
-        if ((frame->row_pos = frame->esc_param[0]) >
-            frame->num_rows)
-          frame->row_pos = frame->num_rows;
-
-        if ((frame->col_pos = frame->esc_param[1]) >
-            frame->num_cols)
-          frame->col_pos = frame->num_cols;
-
+      if (newx > frame->scroll_first_row) {
+        frame->row_pos = newx;
+        vt_up (buf, frame->esc_param[0]);
+      } else {
+        frame->row_pos = frame->scroll_first_row;
         vt_goto (buf, frame->row_pos + frame->first_row - 1,
           frame->col_pos);
+      }
+      break;
+
+    case 'B': /* Cursor DOWN */
+      if (frame->row_pos is frame->last_row)
         break;
 
-      case 'g': /* Clear tabstops */
-        switch (frame->esc_param[0]) {
-          case 0: /* Clear a tabstop */
-            frame->tabstops[frame->col_pos-1] = 0;
-            break;
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
 
-          case 3: /* Clear all tabstops */
-            for (newy = 0; newy < frame->num_cols; ++newy)
-              frame->tabstops[newy] = 0;
-            break;
+      newx = frame->row_pos + frame->esc_param[0];
 
-          default:
-            frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
-            break;
-        }
+      if (newx <= frame->last_row) {
+        frame->row_pos = newx;
+        vt_down (buf, frame->esc_param[0]);
+      } else {
+        frame->row_pos = frame->last_row;
+        vt_goto (buf, frame->row_pos + frame->first_row - 1,
+          frame->col_pos);
+      }
+      break;
+
+    case 'C': /* Cursor RIGHT */
+      if (frame->col_pos is frame->num_cols)
         break;
 
-      case 'm': /* Set terminal attributes */
-        vt_process_m (frame, buf, frame->esc_param[0]);
-        for (i = 1; frame->esc_param[i] and i < MAX_PARAMS; i++)
-          vt_process_m (frame, buf, frame->esc_param[i]);
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
+
+      newy = (frame->col_pos + frame->esc_param[0]);
+
+      if (newy < frame->num_cols) {
+        frame->col_pos = newy;
+
+        vt_right (buf, frame->esc_param[0]);
+      } else {
+        frame->col_pos = frame->num_cols;
+        vt_goto (buf, frame->row_pos + frame->first_row - 1,
+          frame->col_pos);
+      }
+      break;
+
+    case 'D': /* Cursor LEFT */
+      if (frame->col_pos is 1)
         break;
 
-      case 'J': /* Clear screen */
-        switch (frame->esc_param[0]) {
-          case 0: /* Clear from cursor down */
-            vt_video_erase (frame, frame->row_pos,
-              frame->num_rows, 1, frame->num_cols);
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
 
-            newx = frame->row_pos;
-            vt_savecursor (buf);
-            string_append (buf, "\r");
+      newy = (frame->col_pos - frame->esc_param[0]);
 
-            while (newx++ < frame->num_rows) {
-              vt_clreol (buf);
-              string_append (buf, "\n");
-            }
+      if (newy > 1) {
+        frame->col_pos = newy;
+        vt_left (buf, frame->esc_param[0]);
+      } else {
+        frame->col_pos = 1;
+        string_append (buf, "\r");
+      }
 
-            vt_clreol (buf);
-            vt_restcursor (buf);
-            break;
+      break;
 
-          case 1: /* Clear from cursor up */
-            vt_video_erase (frame, 1, frame->row_pos,
-              1, frame->num_cols);
-
-            newx = frame->row_pos;
-            vt_savecursor (buf);
-            string_append (buf, "\r");
-
-            while (--newx > 0) {
-              vt_clreol (buf);
-              vt_up (buf, 1);
-            }
-
-            vt_clreol (buf);
-            vt_restcursor (buf);
-            break;
-
-          case 2: /* Clear whole screen */
-            vt_video_erase (frame, 1, frame->num_rows,
-              1, frame->num_cols);
-
-            vt_goto (buf, frame->first_row + 1 - 1, 1);
-            frame->row_pos = 1;
-            frame->col_pos = 1;
-            newx = frame->row_pos;
-            vt_savecursor (buf);
-            string_append (buf, "\r");
-
-            while (newx++ < frame->num_rows) {
-              vt_clreol (buf);
-              string_append (buf, "\n");
-            }
-
-            vt_clreol (buf);
-            vt_restcursor (buf);
-            break;
-
-          default:
-            frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
-            break;
-        }
-        break;
-
-      case 'K': /* Clear line */
-        switch (frame->esc_param[0]) {
-          case 0: /* Clear to end of line */
-            vt_video_erase (frame, frame->row_pos,
-              frame->row_pos, frame->col_pos, frame->num_cols);
-
-            vt_clreol (buf);
-          break;
-
-          case 1: /* Clear to beginning of line */
-            vt_video_erase (frame, frame->row_pos,
-              frame->row_pos, 1, frame->col_pos);
-
-            vt_clrbgl (buf);
-            break;
-
-          case 2: /* Clear whole line */
-            vt_video_erase (frame, frame->row_pos,
-              frame->row_pos, 1, frame->num_cols);
-
-            vt_clrline (buf);
-            break;
-          }
-        break;
-
-      case 'P': /* Delete under cursor */
-        vt_video_erase (frame, frame->row_pos,
-          frame->row_pos, frame->col_pos, frame->col_pos);
-
-        vt_delunder (buf, frame->esc_param[0]);
-        break;
-
-      case 'M': /* Delete lines */
-        vt_video_scroll_back (frame, 1);
-        vt_delline (buf, frame->esc_param[0]);
-        break;
-
-      case 'L': /* Insert lines */
-        vt_insline (buf, frame->esc_param[0]);
-        break;
-
-      case '@': /* Insert characters */
-        ifnot (frame->esc_param[0])
-          frame->esc_param[0] = 1;
-
-        vt_insertchar (buf, frame->esc_param[0]);
-        vt_frame_video_rshift (frame, frame->esc_param[0]);
-        break;
-
-      case 'i': /* Printing */
-        frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
-        break;
-
-      case 'n': /* Device status request */
-        switch (frame->esc_param[0]) {
-          case 5: /* Status report request */
-            /* Say we're just fine. */
-            write (frame->fd, "\033[0n", 4);
-            break;
-
-          case 6: /* Cursor position request */
-            sprintf (reply, "\033[%d;%dR", frame->row_pos,
-                frame->col_pos);
-
-            write (frame->fd, reply, bytelen (reply));
-            break;
-          }
-          break;
-
-      case 'c': /* Request terminal identification string_t */
-        /* Respond with "I am a vt102" */
-        write (frame->fd, "\033[?6c", 5);
-        break;
-
-      default:
-        frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
-        break;
+    case 'G': { /* (hpa - horizontal) (ADDITION) */
+      int col = frame->esc_param[0];
+      int row = frame->esc_param[1];
+      if (row <= 1) row = frame->row_pos;
+      frame->esc_param[0] = row;
+      frame->esc_param[1] = col;
     }
+
+    case 'd': /* (vpa - HVP) (ADDITION) */
+      frame->unimplemented_cb (frame, "ADDI param[0]", c, frame->esc_param[0]);
+      frame->unimplemented_cb (frame, "ADDI param[1]", c, frame->esc_param[1]);
+      frame->unimplemented_cb (frame, "ADDI row_pos", c, frame->row_pos);
+      frame->unimplemented_cb (frame, "ADDI col_pos", c, frame->col_pos);
+
+    case 'f':
+    case 'H': /* Move cursor to coordinates */
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
+
+      ifnot (frame->esc_param[1])
+        frame->esc_param[1] = 1;
+
+      if ((frame->row_pos = frame->esc_param[0]) >
+          frame->num_rows)
+        frame->row_pos = frame->num_rows;
+
+      if ((frame->col_pos = frame->esc_param[1]) >
+          frame->num_cols)
+        frame->col_pos = frame->num_cols;
+
+      vt_goto (buf, frame->row_pos + frame->first_row - 1,
+        frame->col_pos);
+      break;
+
+    case 'g': /* Clear tabstops */
+      switch (frame->esc_param[0]) {
+        case 0: /* Clear a tabstop */
+          frame->tabstops[frame->col_pos-1] = 0;
+          break;
+
+        case 3: /* Clear all tabstops */
+          for (newy = 0; newy < frame->num_cols; ++newy)
+            frame->tabstops[newy] = 0;
+          break;
+
+        default:
+          frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
+          break;
+      }
+      break;
+
+    case 'm': /* Set terminal attributes */
+      vt_process_m (frame, buf, frame->esc_param[0]);
+      for (i = 1; frame->esc_param[i] and i < MAX_PARAMS; i++)
+        vt_process_m (frame, buf, frame->esc_param[i]);
+      break;
+
+    case 'J': /* Clear screen */
+      switch (frame->esc_param[0]) {
+        case 0: /* Clear from cursor down */
+          vt_video_erase (frame, frame->row_pos,
+            frame->num_rows, 1, frame->num_cols);
+
+          newx = frame->row_pos;
+          vt_savecursor (buf);
+          string_append (buf, "\r");
+
+          while (newx++ < frame->num_rows) {
+            vt_clreol (buf);
+            string_append (buf, "\n");
+          }
+
+          vt_clreol (buf);
+          vt_restcursor (buf);
+          break;
+
+        case 1: /* Clear from cursor up */
+          vt_video_erase (frame, 1, frame->row_pos,
+            1, frame->num_cols);
+
+          newx = frame->row_pos;
+          vt_savecursor (buf);
+          string_append (buf, "\r");
+
+          while (--newx > 0) {
+            vt_clreol (buf);
+            vt_up (buf, 1);
+          }
+
+          vt_clreol (buf);
+          vt_restcursor (buf);
+          break;
+
+        case 2: /* Clear whole screen */
+          vt_video_erase (frame, 1, frame->num_rows,
+            1, frame->num_cols);
+
+          vt_goto (buf, frame->first_row + 1 - 1, 1);
+          frame->row_pos = 1;
+          frame->col_pos = 1;
+          newx = frame->row_pos;
+          vt_savecursor (buf);
+          string_append (buf, "\r");
+
+          while (newx++ < frame->num_rows) {
+            vt_clreol (buf);
+            string_append (buf, "\n");
+          }
+
+          vt_clreol (buf);
+          vt_restcursor (buf);
+          break;
+
+        default:
+          frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
+          break;
+      }
+      break;
+
+    case 'K': /* Clear line */
+      switch (frame->esc_param[0]) {
+        case 0: /* Clear to end of line */
+          vt_video_erase (frame, frame->row_pos,
+            frame->row_pos, frame->col_pos, frame->num_cols);
+
+          vt_clreol (buf);
+        break;
+
+        case 1: /* Clear to beginning of line */
+          vt_video_erase (frame, frame->row_pos,
+            frame->row_pos, 1, frame->col_pos);
+
+          vt_clrbgl (buf);
+          break;
+
+        case 2: /* Clear whole line */
+          vt_video_erase (frame, frame->row_pos,
+            frame->row_pos, 1, frame->num_cols);
+
+          vt_clrline (buf);
+          break;
+        }
+      break;
+
+    case 'P': /* Delete under cursor */
+      vt_video_erase (frame, frame->row_pos,
+        frame->row_pos, frame->col_pos, frame->col_pos);
+
+      vt_delunder (buf, frame->esc_param[0]);
+      break;
+
+    case 'M': /* Delete lines */
+      vt_frame_video_scroll_back (frame, 1);
+      vt_delline (buf, frame->esc_param[0]);
+      break;
+
+    case 'L': /* Insert lines */
+      vt_insline (buf, frame->esc_param[0]);
+      break;
+
+    case '@': /* Insert characters */
+      ifnot (frame->esc_param[0])
+        frame->esc_param[0] = 1;
+
+      vt_insertchar (buf, frame->esc_param[0]);
+      vt_frame_video_rshift (frame, frame->esc_param[0]);
+      break;
+
+    case 'i': /* Printing */
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
+      break;
+
+    case 'n': /* Device status request */
+      switch (frame->esc_param[0]) {
+        case 5: /* Status report request */
+          /* Say we're just fine. */
+          write (frame->fd, "\033[0n", 4);
+          break;
+
+        case 6: /* Cursor position request */
+          sprintf (reply, "\033[%d;%dR", frame->row_pos,
+              frame->col_pos);
+
+          write (frame->fd, reply, bytelen (reply));
+          break;
+        }
+        break;
+
+    case 'c': /* Request terminal identification string_t */
+      /* Respond with "I am a vt102" */
+      write (frame->fd, "\033[?6c", 5);
+      break;
+
+    case 'X': /* (ECH) Erase param chars (ADDITION) */
+      vt_frame_ech (frame, buf, frame->esc_param[0]);
+      break;
+
+    //case 'G':
+       /* (CHA) Cursor to column param (ADDITION) */
+     // vt_frame_cha (frame, buf, frame->esc_param[0]);
+     // break;
+
+    default:
+      frame->unimplemented_cb (frame, __func__, c, frame->esc_param[0]);
+      break;
+  }
 
   vt_frame_esc_set (frame);
   return buf;
@@ -2304,7 +2439,7 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
       if (frame->row_pos < frame->last_row)
         frame->row_pos++;
       else
-        vt_video_scroll (frame, 1);
+        vt_frame_video_scroll (frame, 1);
 
       string_append (buf, "\n");
       break;
@@ -2313,7 +2448,7 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
       if (frame->row_pos > frame->scroll_first_row)
         --frame->row_pos;
       else
-        vt_video_scroll_back (frame, 1);
+        vt_frame_video_scroll_back (frame, 1);
 
       vt_revscroll (buf);
       break;
@@ -2322,7 +2457,7 @@ static string_t *vt_esc_e (vwm_frame *frame, string_t *buf, int c) {
       if (frame->row_pos < frame->last_row)
         frame->row_pos++;
       else
-        vt_video_scroll (frame, 1);
+        vt_frame_video_scroll (frame, 1);
 
       frame->col_pos = 1;
       string_append (buf, "\r\n");
@@ -2427,7 +2562,7 @@ static string_t *vt_esc_scan (vwm_frame *frame, string_t *buf, int c) {
       if (frame->row_pos < frame->last_row)
         frame->row_pos++;
       else
-        vt_video_scroll (frame, 1);
+        vt_frame_video_scroll (frame, 1);
 
       string_append (buf, "\n");
       break;
@@ -2451,7 +2586,7 @@ static string_t *vt_esc_scan (vwm_frame *frame, string_t *buf, int c) {
 
     case '\033':
       frame->process_char_cb = vt_esc_e;
-      break;
+      return buf;
 
     default:
       if (c >= 0x80 or frame->mb_len) {
@@ -2495,6 +2630,99 @@ static string_t *vt_esc_scan (vwm_frame *frame, string_t *buf, int c) {
   return buf;
 }
 
+static void vt_video_add_log_lines (vwm_frame *this) {
+  struct stat st;
+  if (-1 is this->logfd or -1 is fstat (this->logfd, &st))
+    return;
+
+  int size = st.st_size;
+
+  char *mbuf = mmap (0, size, PROT_READ, MAP_SHARED, this->logfd, 0);
+
+  if (NULL is mbuf) return;
+
+  char *buf = mbuf + size - 1;
+
+  int lines = this->num_rows;
+
+  for (int i = 0; i < lines; i++)
+    for (int j = 0; j < this->num_cols; j++)
+      this->videomem[i][j] = 0;
+
+  while (lines isnot 0 and size) {
+    char b[BUFSIZE];
+    char c;
+    int rbts = 0;
+    while (--size) {
+      c = *--buf;
+
+      if (c is '\n') break;
+
+      ifnot (c) continue;
+      b[rbts++] = c;
+    }
+
+    b[rbts] = '\0';
+
+    int blen = bytelen (b);
+
+    char nbuf[blen + 1];
+    for (int i = 0; i < blen; i++)
+      nbuf[i] = b[blen - i - 1];
+
+    nbuf[blen] = '\0';
+
+    int idx = 0;
+    for (int i = 0; i < this->num_cols; i++) {
+      if (idx >= blen) break;
+
+      this->videomem[lines-1][i] =
+         (int) ustring_to_code (nbuf, &idx);
+    }
+
+    lines--;
+  }
+
+  ftruncate (this->logfd, size);
+  lseek (this->logfd, size, SEEK_SET);
+  munmap (0, st.st_size);
+}
+
+static void frame_on_resize (vwm_frame *this, int rows, int cols) {
+  int **videomem = vwm_alloc_ints (rows, cols, 0);
+  int **colors = vwm_alloc_ints (rows, cols, COLOR_FG_NORMAL);
+  int row_pos = 0;
+  int i, j, nj, ni;
+
+  for (i = this->num_rows, ni = rows; i and ni; i--, ni--) {
+    if (this->row_pos is i)
+      if ((row_pos = i + rows - this->num_rows) < 1)
+        row_pos = 1;
+
+    for (j = 0, nj = 0; (j < this->num_cols) and (nj < cols); j++, nj++) {
+      videomem[ni-1][nj] = this->videomem[i-1][j];
+      colors[ni-1][nj] = this->colors[i-1][j];
+    }
+  }
+
+  ifnot (row_pos) /* We never reached the old cursor */
+    row_pos = 1;
+
+  this->row_pos = row_pos;
+  this->col_pos = (this->col_pos > cols ? cols : this->col_pos);
+
+  for (i = 0; i < this->num_rows; i++)
+    free (this->videomem[i]);
+  free (this->videomem);
+
+  for (i = 0; i < this->num_rows; i++)
+    free (this->colors[i]);
+  free (this->colors);
+
+  this->videomem = videomem;
+  this->colors = colors;
+}
+
 static void win_set_frame (vwm_win *this, vwm_frame *frame) {
   string_clear (frame->render);
 
@@ -2523,6 +2751,7 @@ static void win_set_frame (vwm_win *this, vwm_frame *frame) {
   vt_write (frame->render->bytes, stdout);
 }
 
+#ifndef DEBUG
 static void frame_process_output_cb (vwm_frame *this, char *buf, int len) {
   string_clear (this->render);
 
@@ -2531,6 +2760,42 @@ static void frame_process_output_cb (vwm_frame *this, char *buf, int len) {
 
   vt_write (this->render->bytes, stdout);
 }
+#else
+static void frame_process_output_cb (vwm_frame *this, char *buf, int len) {
+  string_clear (this->render);
+
+  FILE *fout = this->root->prop->sequences_fp;
+
+  fprintf (fout, "\n%s\n\n", buf);
+
+  char seq_buf[MAX_SEQ_LEN + 1];
+  int seq_idx = 1;
+  seq_buf[0] = '\0';
+
+  while (len--) {
+
+    if (this->process_char_cb is vt_esc_scan) {
+      ifnot (seq_idx) goto proceed;
+
+      fprintf (fout, "ESC %s\n", seq_buf);
+
+      seq_idx = 0;
+      memset (seq_buf, 0, MAX_SEQ_LEN+1);
+    } else
+      seq_buf[seq_idx++] = *buf;
+
+proceed:
+    this->process_char_cb (this, this->render, (uchar) *buf++);
+  }
+
+  if (seq_idx)
+    fprintf (fout, "ESC %s\n", seq_buf);
+
+  fflush (fout);
+
+  vt_write (this->render->bytes, stdout);
+}
+#endif /* DEBUG */
 
 static void argv_release (char **argv, int *argc) {
   for (int i = 0; i <= *argc; i++) free (argv[i]);
@@ -2743,8 +3008,10 @@ static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
       return NOTOK;
 
     this->logfd = t.fd;
-    this->logfile = strdup (t.fname);
+    this->logfile = strdup (t.fname->bytes);
     this->remove_log = remove_log;
+    tmpfname_free (&t);
+
     return this->logfd;
   }
 
@@ -2764,21 +3031,18 @@ static int frame_at_fork_default_cb (vwm_frame *this, vwm_t *root, vwm_win *pare
   return 1;
 }
 
-FILE *UNFP = NULL;
 static void frame_unimplemented_default_cb (vwm_frame *this, const char *fun, int c, int param) {
-  (void) this;
-  if (NULL is UNFP)
-    UNFP = fopen ("/tmp/unimplemented_seq", "w");
-
-  fprintf (UNFP, "|%s| %c %d| param: %d\n", fun, c, c, param);
-  fflush (UNFP);
+  if (this->root->prop->unimplemented_fp isnot NULL) {
+    fprintf (this->root->prop->unimplemented_fp, "|%s| %c %d| param: %d\n", fun, c, c, param);
+    fflush  (this->root->prop->unimplemented_fp);
+  }
 }
 
 static int win_append_frame (vwm_win *this, vwm_frame *frame) {
   return DListAppend (this, frame);
 }
 
-static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
+static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
   vwm_frame *frame = Alloc (sizeof (vwm_frame));
   self(append_frame, frame);
 
@@ -2787,24 +3051,36 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   frame->win = this->self;
   frame->self = this->frame;
 
-  frame->pid = -1;
-  frame->fd = -1;
-  frame->argc = 0;
-  frame->argv = NULL;
-  frame->logfd = -1;
-  frame->logfile = NULL;
-  frame->remove_log = 0;
-  frame->num_rows = rows;
+  frame->pid = opts.pid;
+  frame->fd = opts.fd;
+  frame->logfile = opts.logfile;
+  frame->num_rows = opts.rows;
+  frame->first_row = opts.first_row;
+
   frame->num_cols = this->num_cols;
-  frame->first_row = first_row;
   frame->first_col = this->first_col;
+
+  ifnot (NULL is opts.argv)
+    Vframe.set.argv (frame, opts.argc, opts.argv);
+  else
+    if (NULL isnot opts.command)
+      Vframe.set.command (frame, opts.command);
+
+  frame->logfd = -1;
+  frame->remove_log = 0;
+
+  if (opts.enable_log)
+    Vframe.set.log (frame, frame->logfile, frame->remove_log);
+
   frame->mb_buf[0] = '\0';
   frame->mb_curlen = frame->mb_len = frame->mb_code = 0;
   frame->render = string_new (2048);
   frame->state = 0;
 
-  frame->process_output_cb = frame_process_output_cb;
-  frame->at_fork_cb = frame_at_fork_default_cb;
+  frame->process_output_cb = (NULL is opts.process_output_cb ?
+      frame_process_output_cb : opts.process_output_cb);
+  frame->at_fork_cb = (NULL is opts.at_fork_cb ?
+      frame_at_fork_default_cb : opts.at_fork_cb);
   frame->unimplemented_cb = frame_unimplemented_default_cb;
 
   frame->videomem = vwm_alloc_ints (frame->num_rows, frame->num_cols, 0);
@@ -2820,6 +3096,9 @@ static vwm_frame *win_new_frame (vwm_win *this, int rows, int first_row) {
   }
 
   vt_frame_reset (frame);
+
+  if (frame->argc)
+    Vframe.fork (frame);
 
   return frame;
 }
@@ -2846,7 +3125,7 @@ static vwm_frame *win_add_frame (vwm_win *this, int argc, char **argv, int draw)
     frame = frame->next;
   }
 
-  frame = self(new_frame, num_rows, first_row);
+  frame = self(new_frame, FrameOpts (.rows = num_rows, .first_row = first_row));
   frame->new_rows = num_rows;
 
   if (NULL isnot argv) {
@@ -2931,46 +3210,10 @@ static void win_release_frame_at (vwm_win *this, int idx) {
   free (frame->tabstops);
   free (frame->esc_param);
 
-  Vframe.release_argv (frame);;
-
+  Vframe.release_argv (frame);
   string_release (frame->render);
 
   free (frame);
-}
-
-static void frame_on_resize (vwm_frame *this, int rows, int cols) {
-  int **videomem = vwm_alloc_ints (rows, cols, 0);
-  int **colors = vwm_alloc_ints (rows, cols, COLOR_FG_NORMAL);
-  int row_pos = 0;
-  int i, j, nj, ni;
-
-  for (i = this->num_rows, ni = rows; i and ni; i--, ni--) {
-    if (this->row_pos is i)
-      if ((row_pos = i + rows - this->num_rows) < 1)
-        row_pos = 1;
-
-    for (j = 0, nj = 0; (j < this->num_cols) and (nj < cols); j++, nj++) {
-      videomem[ni-1][nj] = this->videomem[i-1][j];
-      colors[ni-1][nj] = this->colors[i-1][j];
-    }
-  }
-
-  ifnot (row_pos) /* We never reached the old cursor */
-    row_pos = 1;
-
-  this->row_pos = row_pos;
-  this->col_pos = (this->col_pos > cols ? cols : this->col_pos);
-
-  for (i = 0; i < this->num_rows; i++)
-    free (this->videomem[i]);
-  free (this->videomem);
-
-  for (i = 0; i < this->num_rows; i++)
-    free (this->colors[i]);
-  free (this->colors);
-
-  this->videomem = videomem;
-  this->colors = colors;
 }
 
 static void vwm_make_separator (string_t *render, char *color, int cells, int row, int col) {
@@ -3407,6 +3650,7 @@ static vwm_win *vwm_new_win (vwm_t *this, char *name, win_opts opts) {
   win->max_frames = opts.max_frames;
   win->first_row = opts.first_row;
   win->first_col = opts.first_col;
+
   win->num_rows = opts.rows;
   win->num_cols = opts.cols;
 
@@ -3441,11 +3685,17 @@ static vwm_win *vwm_new_win (vwm_t *this, char *name, win_opts opts) {
     first_row = win->first_row;
 
   for (int i = 0; i < num_frames; i++) {
-    vwm_frame *frame = Vwin.new_frame (win, num_rows, first_row);
-    if (opts.commands isnot NULL) {
-      Vframe.set.command (frame, opts.commands[i]);
-      Vframe.fork (frame);
-    }
+    frame_opts fr_opts;
+
+    if (i < WIN_OPTS_MAX_FRAMES)
+      fr_opts = opts.frame_opts[i];
+    else
+      fr_opts = FrameOpts ();
+
+    fr_opts.rows = num_rows;
+    fr_opts.first_row = first_row;
+
+    Vwin.new_frame (win, fr_opts);
 
     first_row += num_rows + 1;
     num_rows = frame_rows;
@@ -3814,11 +4064,12 @@ check_length:
     for (int i = 0; i < MAX_CHAR_LEN; i++) input_buf[i] = '\0';
 
     if (FD_ISSET (STDIN_FILENO, &read_mask)) {
-      if (0 < fd_read (STDIN_FILENO, input_buf, 1))
+      if (0 < fd_read (STDIN_FILENO, input_buf, 1)) {
         if (VWM_QUIT is self(process_input, win, frame, input_buf)) {
           retval = OK;
           break;
         }
+      }
     }
 
     win = $my(current);
@@ -3858,9 +4109,6 @@ check_length:
 
     win->is_initialized = 1;
   }
-
-  ifnot (NULL is UNFP)
-    fclose (UNFP);
 
   if (retval is 1 or retval is OK) return OK;
 
@@ -3942,18 +4190,17 @@ getc_again:
           if (param > MAX_FRAMES)
             param = MAX_FRAMES;
 
-        char *commands[param];
-        for (int i = 0; i < param; i++)
-          commands[i] = $my(default_app)->bytes;
-
-        win = self(new.win, NULL, WinNewOpts (
+        win_opts w_opts = WinOpts (
             .rows = $my(num_rows),
             .cols = $my(num_cols),
             .num_frames = param,
-            .max_frames = MAX_FRAMES,
             .draw = 1,
-            .focus = 1,
-            .commands = commands));
+            .focus = 1);
+
+        for (int i = 0; i < param; i++)
+          w_opts.frame_opts[i].command = $my(default_app)->bytes;
+
+        win = self(new.win, NULL, w_opts);
         }
       break;
 
@@ -4094,18 +4341,21 @@ public vwm_t *__init_vwm__ (void) {
       .change_win = vwm_change_win,
       .append_win = vwm_append_win,
       .release_win = vwm_release_win,
+      .release_info = vwm_release_info,
       .process_input = vwm_process_input,
       .get = (vwm_get_self) {
         .term = vwm_get_term,
+        .info = vwm_get_info,
         .shell = vwm_get_shell,
         .state = vwm_get_state,
         .lines = vwm_get_lines,
+        .object = vwm_get_object,
         .editor = vwm_get_editor,
+        .tmpdir = vwm_get_tmpdir,
         .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
         .num_wins = vwm_get_num_wins,
         .mode_key = vwm_get_mode_key,
-        .object_at = vwm_get_object_at,
         .current_win = vwm_get_current_win,
         .default_app = vwm_get_default_app,
         .current_frame = vwm_get_current_frame
@@ -4118,12 +4368,21 @@ public vwm_t *__init_vwm__ (void) {
         .editor = vwm_set_editor,
         .tmpdir = vwm_set_tmpdir,
         .mode_key = vwm_set_mode_key,
-        .object_at = vwm_set_object_at,
+        .object = vwm_set_object,
         .current_at = vwm_set_current_at,
         .default_app = vwm_set_default_app,
-        .rline_cb =  vwm_set_rline_cb,
+        .rline_cb = vwm_set_rline_cb,
         .on_tab_cb = vwm_set_on_tab_cb,
-        .edit_file_cb = vwm_set_edit_file_cb
+        .at_exit_cb = vwm_set_at_exit_cb,
+        .edit_file_cb = vwm_set_edit_file_cb,
+        .debug = (vwm_set_debug_self) {
+          .sequences = vwm_set_debug_sequences
+        },
+      },
+      .unset = (vwm_unset_self) {
+        .debug = (vwm_unset_debug_self) {
+          .sequences = vwm_unset_debug_sequences
+        }
       },
       .new = (vwm_new_self) {
         .win = vwm_new_win,
@@ -4211,10 +4470,13 @@ public vwm_t *__init_vwm__ (void) {
   $my(default_app) = string_new_with (DEFAULT_APP);
   $my(mode_key) = MODE_KEY;
 
+  $my(sequences_fp) = NULL;
+
   $my(length) = 0;
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
+  $my(num_at_exit_cbs) = 0;
   $my(objects)[VWMED_OBJECT] = NULL;
 
   self(new.term);
@@ -4222,6 +4484,10 @@ public vwm_t *__init_vwm__ (void) {
   self(set.on_tab_cb, vwm_default_on_tab_cb);
   self(set.edit_file_cb, vwm_default_edit_file_cb);
   self(set.tmpdir, NULL, 0);
+
+#ifdef DEBUG
+    self(set.debug.sequences, NULL);
+#endif
 
   VWM = this;
   return this;
@@ -4241,7 +4507,15 @@ public void __deinit_vwm__ (vwm_t **thisp) {
     win = tmp;
   }
 
+  for (int i = 0; i < $my(num_at_exit_cbs); i++)
+    $my(at_exit_cbs)[i] (this);
+
+  if ($my(num_at_exit_cbs))
+    free ($my(at_exit_cbs));
+
   free ($my(tmpdir));
+
+  self(unset.debug.sequences);
 
   string_release ($my(editor));
   string_release ($my(shell));

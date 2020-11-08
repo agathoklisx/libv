@@ -81,7 +81,7 @@ private char **set_argv (int *argc, char **argv, char **sockname, int *attach) {
 
 int main (int argc, char **argv) {
   vtach_t *vtach = __init_vtach__ (NULL);
-  vwm_t *this = Vtach.get.vwm (vtach);
+  vwm_t *this = Vtach.get.object (vtach, VWM_OBJECT);
 
   int
     retval = 1,
@@ -89,6 +89,7 @@ int main (int argc, char **argv) {
   char *sockname = NULL;
 
   argv = set_argv (&argc, argv, &sockname, &attach);
+
   if (argc < 0) goto theend;
 
   if (NULL is sockname) {
@@ -101,12 +102,13 @@ int main (int argc, char **argv) {
     goto theend;
 
   ifnot (attach)
-    Vtach.pty.main (vtach, argc, argv);
+    retval = Vtach.pty.main (vtach, argc, argv);
 
   retval = Vtach.tty.main (vtach);
 
 theend:
   __deinit_vtach__ (&vtach);
+
   __deinit_vwm__ (&this);
 
   return retval;

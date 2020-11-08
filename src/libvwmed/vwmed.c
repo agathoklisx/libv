@@ -11,32 +11,34 @@
 #include <libv/libvci.h>
 
 #define Vwm    this->self
-#define Vframe this->frame
-#define Vwin   this->win
+//#define Vframe this->frame
+//#define Vwin   this->win
 #define Vterm  this->term
 #define Vwmed  vwmed->self
 
 int main (int argc, char **argv) {
   vwmed_t *vwmed = __init_vwmed__ (NULL);
-  vwm_t *this = Vwmed.get.vwm (vwmed);
+  vwm_t *this = Vwmed.get.object (vwmed, VWM_OBJECT);
 
   int rows, cols;
   vwm_term *term = Vwmed.init.term (vwmed, &rows, &cols);
 
   Vwmed.init.ved (vwmed);
 
-  vwm_win *win = Vwm.new.win (this, "main", WinNewOpts (
-    .rows = rows,
-    .cols = cols,
-    .num_frames = 1,
-    .max_frames = 3));
+  win_opts w_opts = WinOpts (
+      .rows = rows,
+      .cols = cols,
+      .num_frames = 1,
+      .max_frames = 3);
 
-  vwm_frame *frame = Vwin.get.frame_at (win, 0);
+  if (argc > 1) {
+    w_opts.frame_opts[0].argv = argv + 1;
+    w_opts.frame_opts[0].argc = argc - 1;
+  }
 
-  if (argc > 1)
-    Vframe.set.argv (frame, argc-1, argv + 1);
+  w_opts.frame_opts[0].enable_log = 1;
 
-  Vframe.set.log (frame, NULL, 1);
+  Vwm.new.win (this, "main", w_opts);
 
   Vterm.screen.save (term);
   Vterm.screen.clear (term);

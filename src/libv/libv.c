@@ -27,17 +27,15 @@
 #define Vwmed  vwmed->self
 #define Vtach  vtach->self
 
+#define V_NUM_OBJECTS NUM_OBJECTS + 1
+#define E_OBJECT V_NUM_OBJECTS - 1
+
 struct v_prop {
-  vwm_t   *vwm;
-  vtach_t *vtach;
-  vwmed_t *vwmed;
-
-  void *objects[NUM_OBJECTS];
-
-  v_init_opts *opts;
-  string_t *as_sockname;
   int input_fd;
+  v_opts *opts;
+  string_t *as_sockname;
   struct termios orig_mode;
+  void *objects[V_NUM_OBJECTS];
 };
 
 static const char *const arg_parse_usage[] = {
@@ -58,18 +56,6 @@ static const char usage[] =
   "        --remove-socket remove socket if exists and can not be connected\n"
   "\n";
 
-private vwm_t *v_get_vwm (v_t *this) {
-  return $my(vwm);
-}
-
-private vwmed_t *v_get_vwmed (v_t *this) {
-  return $my(vwmed);
-}
-
-private vtach_t *v_get_vtach (v_t *this) {
-  return $my(vtach);
-}
-
 private char *v_get_sockname (v_t *this) {
   ifnot (NULL is $my(opts)->sockname)
     return $my(opts)->sockname;
@@ -78,38 +64,40 @@ private char *v_get_sockname (v_t *this) {
   return NULL;
 }
 
-private void *v_get_object_at (v_t *this, int idx) {
-  if (idx >= NUM_OBJECTS or idx < 0) return NULL;
+private void *v_get_object (v_t *this, int idx) {
+  if (idx >= V_NUM_OBJECTS or idx < 0) return NULL;
   return $my(objects)[idx];
 }
 
-private void v_set_object_at (v_t *this, void *object, int idx) {
-  if (idx >= NUM_OBJECTS or idx < 0) return;
+private void v_set_object (v_t *this, void *object, int idx) {
+  if (idx >= V_NUM_OBJECTS or idx < 0) return;
   $my(objects)[idx] = object;
 }
 
 private int v_exec_child (vtach_t *vtach, int argc, char **argv) {
   (void) argc; (void) argv;
-  vwm_t *vwm = Vtach.get.vwm (vtach);
+  vwm_t *vwm = Vtach.get.object (vtach, VWM_OBJECT);
+  vwmed_t *vwmed = Vwm.get.object (vwm, VWMED_OBJECT);
 
   int retval = Vwm.main (vwm);
 
-  vwmed_t *vwmed = (vwmed_t *) Vwm.get.object_at (vwm, VWMED_OBJECT);
   __deinit_vwmed__ (&vwmed);
   return retval;
 }
 
 private int v_pty_main (vtach_t *vtach, int argc, char **argv) {
-  vwm_t *vwm = Vtach.get.vwm (vtach);
+  vwm_t *vwm = Vtach.get.object (vtach, VWM_OBJECT);
 
   int rows = Vwm.get.lines (vwm);
   int cols = Vwm.get.columns (vwm);
 
-  vwm_win *win = Vwm.new.win (vwm, NULL, WinNewOpts (
+  win_opts w_opts = WinOpts (
       .rows = rows,
       .cols = cols,
       .num_frames = 1,
-      .max_frames = 2));
+      .max_frames = 2);
+
+  vwm_win *win = Vwm.new.win (vwm, NULL, w_opts);
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   Vframe.set.argv (frame, argc, argv);
   Vframe.set.log (frame, NULL, 1);
@@ -126,17 +114,15 @@ private string_t *v_make_sockname (v_t *this, char *sockdir, char *as) {
     return NULL;
   }
 
-  vwmed_t *vwmed = $my(vwmed);
-
   size_t aslen = bytelen (as);
 
   string_t *sockname = String.new (aslen + 16);
 
   if (NULL is sockdir) {
-    string_t *tmp = E.get.env (Vwmed.get.e (vwmed), "tmp_dir");
+    string_t *tmp = E.get.env ($my(objects)[E_OBJECT], "tmp_dir");
     String.append_with_len (sockname, tmp->bytes, tmp->num_bytes);
 
-    tmp = E.get.env (Vwmed.get.e (vwmed), "user_name");
+    tmp = E.get.env ($my(objects)[E_OBJECT], "user_name");
     String.append_fmt (sockname, "/%s_vsockets", tmp->bytes);
 
     if (File.exists (sockname->bytes)) {
@@ -183,7 +169,7 @@ theerror:
 }
 
 private int v_send (v_t *this, char *sockname, char *data) {
-  vtach_t *vtach = $my(vtach);
+  vtach_t *vtach = $my(objects)[VTACH_OBJECT];
   int s = Vtach.sock.connect (vtach, sockname);
   if (s is NOTOK) return 1;
 
@@ -236,9 +222,9 @@ theend:
 }
 
 private int v_main (v_t *this) {
-  vtach_t *vtach = $my(vtach);
+  vtach_t *vtach = $my(objects)[VTACH_OBJECT];
 
-  v_init_opts *opts = $my(opts);
+  v_opts *opts = $my(opts);
 
   int argc = opts->argc;
   int force = opts->force;
@@ -343,38 +329,35 @@ private int v_main (v_t *this) {
     return 1;
 
   ifnot (attach) {
-    vwmed_t *vwmed = $my(vwmed);
+    vwmed_t *vwmed = $my(objects)[VWMED_OBJECT];
     Vwmed.init.ved (vwmed);
 
-    Vtach.set.object_at (vtach, vwmed, VWMED_OBJECT);
-    Vtach.set.exec_child_cb ($my(vtach), vexec_child);
-    Vtach.set.pty_main_cb ($my(vtach), vpty_main);
-    Vtach.pty.main ($my(vtach), argc, argv);
+    Vtach.set.object (vtach, vwmed, VWMED_OBJECT);
+    Vtach.set.exec_child_cb (vtach, vexec_child);
+    Vtach.set.pty_main_cb (vtach, vpty_main);
+
+    Vtach.pty.main (vtach, argc, argv);
   }
 
   if (exit_this)
     return 0;
 
-  return Vtach.tty.main ($my(vtach));
+  return Vtach.tty.main (vtach);
 }
 
-public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
+public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
   v_t *this = Alloc (sizeof (v_t));
-
   this->prop = Alloc (sizeof (v_prop));
 
   this->self = (v_self) {
     .main = v_main,
     .send = v_send,
     .get = (v_get_self) {
-      .vwm = v_get_vwm,
-      .vwmed = v_get_vwmed,
-      .vtach = v_get_vtach,
       .sockname = v_get_sockname,
-      .object_at = v_get_object_at
+      .object = v_get_object
     },
     .set = (v_set_self) {
-      .object_at = v_set_object_at
+      .object = v_set_object
     }
   };
 
@@ -392,8 +375,6 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
       __deinit_v__ (&this);
       return NULL;
     }
-
-  $my(vwm) = vwm;
 
   vtach_t *vtach;
   if (NULL is (vtach = __init_vtach__ (vwm))) {
@@ -421,21 +402,18 @@ public v_t *__init_v__ (vwm_t *vwm, v_init_opts *opts) {
       return NULL;
     }
 
-    if (-1 isnot tcgetattr ($my(input_fd), &orig_mode)) // dont exit yes, as we might be at the end of a pipe
+    if (-1 isnot tcgetattr ($my(input_fd), &orig_mode))
       $my(orig_mode) = orig_mode;
   }
 
-  $my(vtach) = vtach;
-  $my(vwmed) = vwmed;
   $my(objects)[VTACH_OBJECT] = vtach;
   $my(objects)[VWMED_OBJECT] = vwmed;
   $my(objects)[VWM_OBJECT] = vwm;
+  $my(objects)[E_OBJECT] = Vwmed.get.e (vwmed);
 
-  Vwm.set.object_at (vwm, this, V_OBJECT);
-
-  Vtach.set.object_at (vtach, this, V_OBJECT);
-  Vtach.set.object_at (vtach, vwm, VWM_OBJECT);
-  Vtach.set.object_at (vtach, vwmed, VWMED_OBJECT);
+  Vwm.set.object (vwm, this, V_OBJECT);
+  Vtach.set.object (vtach, this, V_OBJECT);
+  Vtach.set.object (vtach, vwmed, VWMED_OBJECT);
 
   return this;
 }
@@ -447,9 +425,13 @@ public void __deinit_v__ (v_t **thisp) {
 
   String.free ($my(as_sockname));
 
-  __deinit_vtach__ (&$my(vtach));
-  __deinit_vwmed__ (&$my(vwmed));
-  __deinit_vwm__   (&$my(vwm));
+  vtach_t *vtach = $my(objects)[VTACH_OBJECT];
+  vwmed_t *vwmed = $my(objects)[VWMED_OBJECT];
+  vwm_t   *vwm   = $my(objects)[VWM_OBJECT];
+
+  __deinit_vtach__ (&vtach);
+  __deinit_vwmed__ (&vwmed);
+  __deinit_vwm__   (&vwm);
 
   tcsetattr ($my(input_fd), TCSAFLUSH, &$my(orig_mode));
 

@@ -27,10 +27,10 @@
 #define self(__f__, ...) this->self.__f__ (this, ##__VA_ARGS__)
 #define $my(__p__) this->prop->__p__
 
-#define Vwm    $my(vwm)->self
-#define Vwin   $my(vwm)->win
-#define Vframe $my(vwm)->frame
-#define Vterm  $my(vwm)->term
+#define Vwm    ((vwm_t *) $my(objects)[VWM_OBJECT])->self
+#define Vwin   ((vwm_t *) $my(objects)[VWM_OBJECT])->win
+#define Vframe ((vwm_t *) $my(objects)[VWM_OBJECT])->frame
+#define Vterm  ((vwm_t *) $my(objects)[VWM_OBJECT])->term
 
 #define SOCKET_MAX_DATA_SIZE (sizeof (struct winsize))
 
@@ -45,7 +45,7 @@ enum
 struct packet {
   unsigned char type;
   unsigned char len;
-  union  {
+  union {
     unsigned char buf[SOCKET_MAX_DATA_SIZE];
     struct winsize ws;
   } u;
@@ -66,7 +66,6 @@ struct client {
 };
 
 struct vtach_prop {
-  vwm_t *vwm;
   vwm_term *term;
 
   char mode_key;
@@ -88,6 +87,9 @@ struct vtach_prop {
 
   PtyMain_cb pty_main_cb;
   PtyOnExecChild_cb exec_child_cb;
+
+  int num_at_exit_cbs;
+  PtyAtExit_cb *at_exit_cbs;
 };
 
 #define EOS "\033[999H"
@@ -275,7 +277,7 @@ private int tty_process_kbd (vtach_t *this, int s, struct packet *pkt) {
     write (s, pkt, sizeof (struct packet));
     return 0;
   } else if (pkt->u.buf[0] is $my(mode_key)) {
-    utf8 c = Vwm.getkey ($my(vwm), 0);
+    utf8 c = Vwm.getkey ($my(objects)[VWM_OBJECT], 0);
 
     if (c is $my(detach_char)) {
       fprintf (stdout, EOS "\r\n[detached]\r\n");
@@ -338,7 +340,7 @@ private int vtach_tty_main (vtach_t *this) {
   while (1) {
 
     FD_ZERO(&readfds);
-    FD_SET(0, &readfds);
+    FD_SET(STDIN_FILENO, &readfds);
     FD_SET(s, &readfds);
 
     int n = select (s + 1, &readfds, NULL, NULL, NULL);
@@ -361,16 +363,16 @@ private int vtach_tty_main (vtach_t *this) {
         break;
       }
 
-      write (1, buf, len);
+      write (STDOUT_FILENO, buf, len);
       n--;
     }
 
-    if (n > 0 and FD_ISSET(0, &readfds)) {
+    if (n > 0 and FD_ISSET(STDIN_FILENO, &readfds)) {
       ssize_t len;
 
       pkt.type = MSG_PUSH;
       memset (pkt.u.buf, 0, sizeof (pkt.u.buf));
-      len = read (0, pkt.u.buf, sizeof (pkt.u.buf));
+      len = read (STDIN_FILENO, pkt.u.buf, sizeof (pkt.u.buf));
 
       if (len <= 0) {
         retval = -1;
@@ -428,8 +430,9 @@ private int pty_child (vtach_t *this, int argc, char **argv) {
 
     ioctl (0, TIOCSCTTY, 1);
 
-    int rows = Vwm.get.lines ($my(vwm));
-    int cols = Vwm.get.columns ($my(vwm));
+    vwm_t *vwm = $my(objects)[VWM_OBJECT];
+    int rows = Vwm.get.lines (vwm);
+    int cols = Vwm.get.columns (vwm);
 
     struct winsize wsiz;
     wsiz.ws_row = rows;
@@ -441,7 +444,7 @@ private int pty_child (vtach_t *this, int argc, char **argv) {
     close (fd);
 
     int retval = $my(exec_child_cb) (this, argc, argv);
-    __deinit_vwm__ (&$my(vwm));
+    __deinit_vwm__ (&vwm);
     __deinit_vtach__ (&this);
 
     _exit (retval);
@@ -512,7 +515,7 @@ top:
   for (p = $my(clients), nclients = 0; p; p = p->next) {
     ssize_t written;
 
-    if (!FD_ISSET(p->fd, &writefds))
+    ifnot (FD_ISSET(p->fd, &writefds))
       continue;
 
     written = 0;
@@ -769,7 +772,7 @@ private int vtach_pty_main (vtach_t *this, int argc, char **argv) {
 }
 
 private vwm_term *vtach_init_term (vtach_t *this, int *rows, int *cols) {
-  vwm_t *vwm = $my(vwm);
+  vwm_t *vwm = $my(objects)[VWM_OBJECT];
 
   vwm_term *term =  Vwm.get.term (vwm);
 
@@ -783,24 +786,33 @@ private vwm_term *vtach_init_term (vtach_t *this, int *rows, int *cols) {
 }
 
 private int vtach_pty_main_default (vtach_t *this, int argc, char **argv) {
-  vwm_t *vwm = $my(vwm);
+  (void) argc;
+  vwm_t *vwm = $my(objects)[VWM_OBJECT];
 
   int rows = Vwm.get.lines (vwm);
   int cols = Vwm.get.columns (vwm);
 
-  vwm_win *win = Vwm.new.win (vwm, NULL, WinNewOpts (
+  win_opts w_opts = WinOpts (
       .rows = rows,
       .cols = cols,
       .num_frames = 1,
-      .max_frames = 2));
+      .max_frames = 2);
+
+  vwm_win *win = Vwm.new.win (vwm, NULL, w_opts);
   vwm_frame *frame = Vwin.get.frame_at (win, 0);
   Vframe.set.argv (frame, argc, argv);
+  Vframe.create_fd (frame);
+
   return OK;
 }
 
-private int  vtach_exec_child_default (vtach_t *this, int argc, char **argv) {
+private int vtach_exec_child_default (vtach_t *this, int argc, char **argv) {
   (void) argc; (void) argv;
-  vwm_t *vwm = $my(vwm);
+
+  Vterm.orig_mode($my(term));
+  Vterm.raw_mode ($my(term));
+
+  vwm_t *vwm = $my(objects)[VWM_OBJECT];
   return Vwm.main (vwm);
 }
 
@@ -828,7 +840,7 @@ private int vtach_init_pty (vtach_t *this, char *sockname) {
   return OK;
 }
 
-private void vtach_set_object_at (vtach_t *this, void *object, int idx) {
+private void vtach_set_object (vtach_t *this, void *object, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return;
   $my(objects)[idx] = object;
 }
@@ -841,8 +853,17 @@ private void vtach_set_pty_main_cb (vtach_t *this, PtyMain_cb cb) {
   $my(pty_main_cb) = cb;
 }
 
-private vwm_t *vtach_get_vwm (vtach_t *this) {
-  return $my(vwm);
+static void vtach_set_at_exit_cb (vtach_t *this, PtyAtExit_cb cb) {
+  if (NULL is cb) return;
+
+  $my(num_at_exit_cbs)++;
+
+  ifnot ($my(num_at_exit_cbs) - 1)
+    $my(at_exit_cbs) = Alloc (sizeof (PtyAtExit_cb));
+  else
+    $my(at_exit_cbs) = Realloc ($my(at_exit_cbs), sizeof (PtyAtExit_cb) * $my(num_at_exit_cbs));
+
+  $my(at_exit_cbs)[$my(num_at_exit_cbs) -1] = cb;
 }
 
 private vwm_term *vtach_get_term (vtach_t *this) {
@@ -853,7 +874,7 @@ private char *vtach_get_sockname (vtach_t *this) {
   return $my(sockname);
 }
 
-private void *vtach_get_object_at (vtach_t *this, int idx) {
+private void *vtach_get_object (vtach_t *this, int idx) {
   if (idx >= NUM_OBJECTS or idx < 0) return NULL;
   return $my(objects)[idx];
 }
@@ -870,15 +891,15 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
 
   this->self = (vtach_self) {
     .set = (vtach_set_self) {
-      .object_at = vtach_set_object_at,
+      .object = vtach_set_object,
+      .at_exit_cb = vtach_set_at_exit_cb,
       .pty_main_cb = vtach_set_pty_main_cb,
       .exec_child_cb = vtach_set_exec_child_cb
     },
     .get = (vtach_get_self) {
-      .vwm = vtach_get_vwm,
       .term = vtach_get_term,
+      .object = vtach_get_object,
       .sockname = vtach_get_sockname,
-      .object_at = vtach_get_object_at,
       .sock_max_data_size = vtach_get_sock_max_data_size
     },
     .init = (vtach_init_self) {
@@ -899,14 +920,15 @@ public vtach_t *__init_vtach__ (vwm_t *vwm) {
   };
 
   if (NULL is vwm)
-    $my(vwm) = __init_vwm__ ();
-  else
-    $my(vwm) = vwm;
+    vwm = __init_vwm__ ();
 
-  $my(term) = Vwm.get.term ($my(vwm));
-  $my(mode_key) = Vwm.get.mode_key ($my(vwm));
+  $my(objects)[VWM_OBJECT] = vwm;
 
-  Vwm.set.object_at ($my(vwm), (void *) this, VTACH_OBJECT);
+  $my(num_at_exit_cbs) = 0;
+  $my(term) = Vwm.get.term (vwm);
+  $my(mode_key) = Vwm.get.mode_key (vwm);
+
+  Vwm.set.object (vwm, this, VTACH_OBJECT);
 
   return this;
 }
@@ -915,6 +937,12 @@ public void __deinit_vtach__ (vtach_t **thisp) {
   if (NULL is *thisp) return;
 
   vtach_t *this = *thisp;
+
+  for (int i = 0; i < $my(num_at_exit_cbs); i++)
+    $my(at_exit_cbs)[i] (this);
+
+  if ($my(num_at_exit_cbs))
+    free ($my(at_exit_cbs));
 
   free (this->prop);
   free (this);

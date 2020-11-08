@@ -11,11 +11,18 @@
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
+typedef unsigned long ulong;
 typedef signed int utf8;
 
 #ifndef MAX_FRAMES
 #define MAX_FRAMES 3
 #endif
+
+#ifdef WIN_OPTS_MAX_FRAMES
+#undef WIN_OPTS_MAX_FRAMES
+#endif
+
+#define WIN_OPTS_MAX_FRAMES 6
 
 #ifndef MAX_ARGS
 #define MAX_ARGS    256
@@ -52,11 +59,17 @@ typedef signed int utf8;
 #define VWM_IGNORE_FOR_NOW (1 << 1)
 #define VWM_QUIT           (1 << 2) // this coresponds to EXIT_THIS
 
-#define VFRAME_CLEAR_VIDEO_MEM (1 << 0)
-#define VFRAME_CLEAR_LOG       (1 << 1)
+#define VFRAME_CLEAR_VIDEO_MEM   (1 << 0)
+#define VFRAME_CLEAR_LOG         (1 << 1)
+#define VFRAME_ESC_PROCESS_DIGIT (1 << 2)
 
+#ifndef DRAW
 #define DRAW        1
+#endif
+
+#ifndef DONOT_DRAW
 #define DONOT_DRAW  0
+#endif
 
 typedef struct vwm_prop vwm_prop;
 typedef struct vwm_term vwm_term;
@@ -66,6 +79,7 @@ typedef struct vwm_t vwm_t;
 
 typedef void (*FrameProcessOutput_cb) (vwm_frame *, char *, int);
 typedef void (*FrameUnimplemented_cb) (vwm_frame *, const char *, int, int);
+typedef void (*VwmAtExit_cb) (vwm_t *);
 typedef int  (*VwmOnTab_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*VwmRLine_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*VwmEditFile_cb) (vwm_t *, char *, void *);
@@ -87,35 +101,99 @@ struct vwm_term {
     in_fd;
 };
 
+typedef struct frame_opts {
+  char
+    **argv,
+    *command,
+    *logfile;
+
+  int
+    fd,
+    argc,
+    rows,
+    first_row,
+    enable_log;
+
+  pid_t pid;
+
+  FrameProcessOutput_cb process_output_cb;
+  FrameAtFork_cb        at_fork_cb;
+
+} frame_opts;
+
+#define FrameOpts(...) (frame_opts) { \
+  .argv = NULL,                       \
+  .argc = 0,                          \
+  .command = NULL,                    \
+  .logfile = NULL,                    \
+  .fd = -1,                           \
+  .pid = -1,                          \
+  .rows = -1,                         \
+  .first_row = -1,                    \
+  .enable_log = 0,                    \
+  .process_output_cb = NULL,          \
+  .at_fork_cb = NULL,                 \
+  __VA_ARGS__ }
+
 typedef struct win_opts {
   int
     rows,
     cols,
+    draw,
     focus,
     first_row,
     first_col,
     num_frames,
-    max_frames,
-    draw;
-  char **commands;
+    max_frames;
+
+  frame_opts frame_opts[WIN_OPTS_MAX_FRAMES];
 } win_opts;
 
-#define WinNewOpts(...) (win_opts) {  \
-  .rows = 24,                         \
-  .cols = 78,                         \
-  .focus = 0,                         \
-  .first_row = 1,                     \
-  .first_col = 1,                     \
-  .num_frames = 1,                    \
-  .max_frames = 3,                    \
-  .draw = DONOT_DRAW,                 \
-  .commands = NULL,                   \
+#define WinOpts(...) (win_opts) {  \
+  .rows = 24,                      \
+  .cols = 78,                      \
+  .focus = 0,                      \
+  .first_row = 1,                  \
+  .first_col = 1,                  \
+  .num_frames = 1,                 \
+  .max_frames = 3,                 \
+  .draw = DONOT_DRAW,              \
+  .frame_opts[0] = FrameOpts(),    \
+  .frame_opts[1] = FrameOpts(),    \
+  .frame_opts[2] = FrameOpts(),    \
+  .frame_opts[3] = FrameOpts(),    \
+  .frame_opts[4] = FrameOpts(),    \
+  .frame_opts[5] = FrameOpts(),    \
   __VA_ARGS__ }
+
+typedef struct vframe_info {
+  int
+    at_frame;
+
+  pid_t pid;
+
+  char *argv[MAX_ARGS];
+} vframe_info;
+
+typedef struct vwin_info {
+  int
+    num_frames;
+  vframe_info **frames;
+} vwin_info;
+
+typedef struct vwm_info {
+  int
+    num_win;
+
+  pid_t pid;
+
+  vwin_info **wins;
+} vwm_info;
 
 typedef struct vwm_term_screen_self {
   void
-    (*clear)   (vwm_term *),
     (*save)    (vwm_term *),
+    (*clear)   (vwm_term *),
     (*restore) (vwm_term *);
 } vwm_term_screen_self;
 
@@ -123,8 +201,8 @@ typedef struct vwm_term_self {
   vwm_term_screen_self screen;
 
   void
-    (*init_size) (vwm_term *, int *, int *),
-    (*release)   (vwm_term **);
+    (*release)   (vwm_term **),
+    (*init_size) (vwm_term *, int *, int *);
 
   int
     (*raw_mode)  (vwm_term *),
@@ -157,10 +235,11 @@ typedef struct vwm_frame_set_self {
     (*command) (vwm_frame *, char *),
     (*unimplemented_cb) (vwm_frame *, FrameUnimplemented_cb);
 
+  int (*log) (vwm_frame *, char *,  int);
+
   FrameProcessOutput_cb (*process_output_cb) (vwm_frame *, FrameProcessOutput_cb);
   FrameAtFork_cb (*at_fork_cb) (vwm_frame *, FrameAtFork_cb);
 
-  int (*log) (vwm_frame *, char *,  int);
 } vwm_frame_set_self;
 
 typedef struct vwm_frame_self {
@@ -170,8 +249,8 @@ typedef struct vwm_frame_self {
   void
     (*clear) (vwm_frame *, int),
     (*on_resize) (vwm_frame *, int, int),
-    (*release_argv) (vwm_frame *),
     (*release_log) (vwm_frame *),
+    (*release_argv) (vwm_frame *),
     (*process_output) (vwm_frame *, char *, int);
 
   int
@@ -228,14 +307,15 @@ typedef struct vwm_win_self {
     (*delete_frame) (vwm_win *, vwm_frame *, int);
 
   vwm_frame
-    *(*new_frame) (vwm_win *, int, int),
+    *(*init_frame) (vwm_win *, frame_opts),
+    *(*new_frame) (vwm_win *, frame_opts),
     *(*add_frame) (vwm_win *, int, char **, int),
     *(*pop_frame_at) (vwm_win *, int);
 } vwm_win_self;
 
 typedef struct vwm_get_self {
   void
-    *(*object_at) (vwm_t *, int);
+    *(*object) (vwm_t *, int);
 
   int
     (*state) (vwm_t *),
@@ -247,15 +327,33 @@ typedef struct vwm_get_self {
   char
     *(*shell) (vwm_t *),
     *(*editor) (vwm_t *),
+    *(*tmpdir) (vwm_t *),
      (*mode_key) (vwm_t *),
     *(*default_app) (vwm_t *);
 
-  vwm_term *(*term) (vwm_t *);
+  vwm_info *(*info) (vwm_t *);
   vwm_win *(*current_win) (vwm_t *);
+  vwm_term *(*term) (vwm_t *);
   vwm_frame *(*current_frame) (vwm_t *);
 } vwm_get_self;
 
+typedef struct vwm_unset_debug_self {
+  void
+    (*sequences) (vwm_t *);
+} vwm_unset_debug_self;
+
+typedef struct vwm_unset_self {
+  vwm_unset_debug_self debug;
+} vwm_unset_self;
+
+typedef struct vwm_set_debug_self {
+  void
+    (*sequences) (vwm_t *, char *);
+} vwm_set_debug_self;
+
 typedef struct vwm_set_self {
+  vwm_set_debug_self debug;
+
   void
     (*size)   (vwm_t *, int, int, int),
     (*term)   (vwm_t *, vwm_term *),
@@ -263,11 +361,12 @@ typedef struct vwm_set_self {
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
     (*tmpdir) (vwm_t *, char *, size_t),
+    (*object) (vwm_t *, void *, int),
     (*mode_key) (vwm_t *, char),
-    (*object_at) (vwm_t *, void *, int),
     (*default_app) (vwm_t *, char *),
     (*rline_cb) (vwm_t *, VwmRLine_cb),
     (*on_tab_cb) (vwm_t *, VwmOnTab_cb),
+    (*at_exit_cb) (vwm_t *, VwmAtExit_cb),
     (*edit_file_cb) (vwm_t *, VwmEditFile_cb);
 
   vwm_win *(*current_at) (vwm_t *, int);
@@ -280,13 +379,15 @@ typedef struct vwm_new_self {
 } vwm_new_self;
 
 typedef struct vwm_self {
+   vwm_new_self new;
    vwm_get_self get;
    vwm_set_self set;
-   vwm_new_self new;
+   vwm_unset_self unset;
 
   void
     (*change_win) (vwm_t *, vwm_win *, int, int),
-    (*release_win) (vwm_t *, vwm_win *);
+    (*release_win) (vwm_t *, vwm_win *),
+    (*release_info) (vwm_t *, vwm_info **);
 
   int
     (*main) (vwm_t *),
