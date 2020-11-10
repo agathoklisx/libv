@@ -309,7 +309,12 @@ private int vwmed_rline_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *ob
 
 private int vwmed_edit_file_cb (vwm_t *vwm, char *file, void *object) {
   vwmed_t *this = (vwmed_t *) object;
-
+/*
+      .frow = 3,
+      .fcol = 8,
+      .lines = 16,
+      .columns = 20,
+*/
   ed_t *ed = E.new ($my(__E__), EdOpts(
       .num_win = 1,
       .init_cb = __init_ext__,

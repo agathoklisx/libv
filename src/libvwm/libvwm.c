@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdarg.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
@@ -67,7 +68,7 @@ static vwm_t *VWM;
 #define isnotutf8(c_)   (IS_UTF8 (c_) == 0)
 #define isnotatty(fd_)  (0 == isatty ((fd_)))
 
-#define STR_FMT_LEN(len_, fmt_, ...)                                      \
+#define V_STR_FMT_LEN(len_, fmt_, ...)                                      \
 ({                                                                    \
   char buf_[len_];                                                    \
   snprintf (buf_, len_, fmt_, __VA_ARGS__);                           \
@@ -174,7 +175,6 @@ typedef string_t *(*FrameProcessChar_cb) (vwm_frame *, string_t *, int);
 struct vwm_frame {
   char
     **argv,
-    *logfile,
     mb_buf[8],
     tty_name[1024];
 
@@ -217,7 +217,9 @@ struct vwm_frame {
 
   pid_t pid;
 
-  string_t *render;
+  string_t
+    *logfile,
+    *render;
 
   FrameProcessOutput_cb process_output_cb;
   FrameProcessChar_cb   process_char_cb;
@@ -281,14 +283,15 @@ struct vwm_win {
 struct vwm_prop {
   vwm_term  *term;
 
-  char
-    mode_key,
-    *tmpdir;
+  char mode_key;
 
   string_t
-    *default_app,
     *shell,
-    *editor;
+    *editor,
+    *tmpdir,
+    *default_app,
+    *sequences_fname,
+    *unimplemented_fname;
 
   FILE
     *unimplemented_fp,
@@ -651,14 +654,19 @@ static dirlist_t dir_list (char *dir) {
   return dlist;
 }
 
-static void tmpfname_free (tmpname_t *this) {
-  ifnot (this) return;
-  ifnot (NULL is this->fname) {
-    unlink (this->fname->bytes);
-    string_free (this->fname);
-    this->fname = NULL;
-  }
+/*
+static void tmpfname_free (tmpname_t *t, int remove_fname) {
+  if (NULL is t) return;
+
+  if (remove_fname)
+    ifnot (NULL is t->fname) {
+      unlink (t->fname->bytes);
+
+      string_free (t->fname);
+      t->fname = NULL;
+    }
 }
+*/
 
 static tmpname_t tmpfname (char *dname, char *prefix) {
   static unsigned int see = 12252;
@@ -733,7 +741,7 @@ again:
       goto theend;
     }
 
-  t.fname = string_new_with_len (name, len);
+    t.fname = string_new_with_len (name, len);
   }
 
 theend:
@@ -970,24 +978,93 @@ static void vwm_set_shell (vwm_t *this, char *shell) {
   string_append_with_len ($my(shell), shell, len);
 }
 
+static void vwm_set_debug_unimplemented (vwm_t *this, char *fname) {
+  self(unset.debug.unimplemented);
+
+  if (NULL is fname) {
+    tmpname_t t = tmpfname (self(get.tmpdir),
+        V_STR_FMT_LEN (64, "%d_unimplemented", getpid ()));
+
+    if (-1 is t.fd) return;
+
+    $my(unimplemented_fp) = fdopen (t.fd, "w+");
+    $my(unimplemented_fname) = t.fname;
+
+    return;
+  }
+
+  $my(unimplemented_fname) = string_new_with (fname);
+  $my(unimplemented_fp) = fopen (fname, "w");
+}
+
+static void vwm_unset_debug_unimplemented (vwm_t *this) {
+  if (NULL is $my(unimplemented_fp)) return;
+  fclose ($my(unimplemented_fp));
+  $my(unimplemented_fp) = NULL;
+  string_free ($my(unimplemented_fname));
+}
+
+static void vwm_set_debug_sequences (vwm_t *this, char *fname) {
+  self(unset.debug.sequences);
+
+  if (NULL is fname) {
+    tmpname_t t = tmpfname (self(get.tmpdir),
+        V_STR_FMT_LEN (64, "%d_sequences", getpid ()));
+
+    if (-1 is t.fd) return;
+
+    $my(sequences_fp) = fdopen (t.fd, "w+");
+    $my(sequences_fname) = t.fname;
+
+    return;
+  }
+
+  $my(sequences_fname) = string_new_with (fname);
+  $my(sequences_fp) = fopen (fname, "w");
+}
+
 static void vwm_unset_debug_sequences (vwm_t *this) {
   if (NULL is $my(sequences_fp)) return;
   fclose ($my(sequences_fp));
   $my(sequences_fp) = NULL;
+  string_free ($my(sequences_fname));
 }
 
-static void vwm_set_debug_sequences (vwm_t *this, char *fname) {
-  ifnot (NULL is $my(sequences_fp)) return;
+static void vwm_unset_tmpdir (vwm_t *this) {
+  string_free ($my(tmpdir));
+  $my(tmpdir) = NULL;
+}
 
-  if (NULL is fname) {
-    tmpname_t t = tmpfname ($my(tmpdir), "libvwm_sequences");
-    if (-1 is t.fd)  return;
+static int vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
+  if (NULL is $my(tmpdir))
+    $my(tmpdir) = string_new (32);
 
-    $my(sequences_fp) = fdopen (t.fd, "w+");
+  string_clear ($my(tmpdir));
 
-    tmpfname_free (&t);
-  } else
-    $my(sequences_fp) = fopen (fname, "w");
+  if (NULL is dir)
+    string_append ($my(tmpdir), TMPDIR);
+  else
+    string_append_with_len ($my(tmpdir), dir, len);
+
+  string_append_byte ($my(tmpdir), '/');
+  string_append ($my(tmpdir), V_STR_FMT_LEN (64, "%d-vwm_tmpdir", getpid ()));
+
+  if (-1 is access ($my(tmpdir)->bytes, F_OK)) {
+    if (-1 is mkdir ($my(tmpdir)->bytes, S_IRWXU))
+      goto theerror;
+  } else {
+    ifnot (dir_is_directory ($my(tmpdir)->bytes))
+      goto theerror;
+
+    if (-1 is access ($my(tmpdir)->bytes, W_OK|R_OK|X_OK))
+      goto theerror;
+  }
+
+  return OK;
+
+theerror:
+  self(unset.tmpdir);
+  return NOTOK;
 }
 
 /* This is an extended version of the same function of the kilo editor at:
@@ -1160,21 +1237,6 @@ static utf8 vwm_getkey (vwm_t *this, int infd) {
   return -1;
 }
 
-static void vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
-  ifnot (NULL is $my(tmpdir))
-    free ($my(tmpdir));
-
-  if (NULL is dir) {
-    len = bytelen (TMPDIR);
-    $my(tmpdir) = Alloc (len + 1);
-    cstring_cp ($my(tmpdir), len + 1, TMPDIR, len);
-    return;
-  }
-
-  $my(tmpdir) = Alloc (len + 1);
-  cstring_cp ($my(tmpdir), len + 1, dir, len);
-}
-
 static vwm_win *vwm_set_current_at (vwm_t *this, int idx) {
   vwm_win *cur_win = $my(current);
   if (INDEX_ERROR isnot DListSetCurrent ($myprop, idx)) {
@@ -1206,7 +1268,10 @@ static void *vwm_get_object (vwm_t *this, int idx) {
 }
 
 static char *vwm_get_tmpdir (vwm_t *this) {
-  return $my(tmpdir);
+  ifnot (NULL is $my(tmpdir))
+    return $my(tmpdir)->bytes;
+
+  return TMPDIR;
 }
 
 static int vwm_get_num_wins (vwm_t *this) {
@@ -1361,11 +1426,11 @@ static void vt_write (char *buf, FILE *fp) {
 }
 
 static string_t *vt_insline (string_t *buf, int num) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dL", num));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dL", num));
 }
 
 static string_t *vt_insertchar (string_t *buf, int numcols) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d@", numcols));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d@", numcols));
 }
 
 static string_t *vt_savecursor (string_t *buf) {
@@ -1389,11 +1454,11 @@ static string_t *vt_clrline (string_t *buf) {
 }
 
 static string_t *vt_delunder (string_t *buf, int num) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dP", num));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dP", num));
 }
 
 static string_t *vt_delline (string_t *buf, int num) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dM", num));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dM", num));
 }
 
 static string_t *vt_attr_reset (string_t *buf) {
@@ -1401,23 +1466,23 @@ static string_t *vt_attr_reset (string_t *buf) {
 }
 
 static string_t *vt_reverse (string_t *buf, int on) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "7" : "27")));
 }
 
 static string_t *vt_underline (string_t *buf, int on) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "4" : "24")));
 }
 
 static string_t *vt_bold (string_t *buf, int on) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "1" : "22")));
 }
 
 static string_t *vt_italic (string_t *buf, int on) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "3" : "23")));
 }
 
 static string_t *vt_blink (string_t *buf, int on) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%sm", (on ? "5" : "25")));
 }
 
 static string_t *vt_bell (string_t *buf) {
@@ -1425,27 +1490,27 @@ static string_t *vt_bell (string_t *buf) {
 }
 
 static string_t *vt_setfg (string_t *buf, int color) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
 static string_t *vt_setbg (string_t *buf, int color) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;1m", color));
 }
 
 static string_t *vt_left (string_t *buf, int count) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dD", count));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dD", count));
 }
 
 static string_t *vt_right (string_t *buf, int count) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dC", count));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dC", count));
 }
 
 static string_t *vt_up (string_t *buf, int numrows) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dA", numrows));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dA", numrows));
 }
 
 static string_t *vt_down (string_t *buf, int numrows) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dB", numrows));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dB", numrows));
 }
 
 static string_t *vt_irm (string_t *buf) {
@@ -1460,11 +1525,11 @@ static string_t *vt_setscroll (string_t *buf, int first, int last) {
   if (0 is first and 0 is last)
     return string_append_with_len (buf, "\033[r", 3);
   else
-    return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
+    return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dr", first, last));
 }
 
 static string_t *vt_goto (string_t *buf, int row, int col) {
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%d;%dH", row, col));
 }
 
 static string_t *vt_attr_check (string_t *buf, int pixel, int lastattr, uchar *currattr) {
@@ -1613,7 +1678,7 @@ static string_t *vt_frame_ech (vwm_frame *frame, string_t *buf, int num_cols) {
     frame->colors[frame->row_pos-1][frame->col_pos - i - 1] = COLOR_FG_NORM;
   }
 
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dX", num_cols));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dX", num_cols));
 }
 
 /*
@@ -1626,7 +1691,7 @@ static string_t *vt_frame_cha (vwm_frame *frame, string_t *buf, int param) {
     frame->col_pos = param;
   }
 
-  return string_append (buf, STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dG", param));
+  return string_append (buf, V_STR_FMT_LEN (MAX_SEQ_LEN, "\033[%dG", param));
 }
 */
 
@@ -1725,15 +1790,15 @@ static string_t *vt_keystate_print (string_t *buf, int application) {
 static string_t *vt_altcharset (string_t *buf, int charset, int type) {
   switch (type) {
     case UK_CHARSET:
-      string_append_with_len (buf, STR_FMT_LEN (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, V_STR_FMT_LEN (4, "\033%cA", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case US_CHARSET:
-      string_append_with_len (buf, STR_FMT_LEN (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, V_STR_FMT_LEN (4, "\033%cB", (charset is G0 ? '(' : ')')), 3);
       break;
 
     case GRAPHICS:
-      string_append_with_len (buf, STR_FMT_LEN (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
+      string_append_with_len (buf, V_STR_FMT_LEN (4, "\033%c0", (charset is G0 ? '(' : ')')), 3);
       break;
 
     default:  break;
@@ -2916,7 +2981,7 @@ static int frame_get_logfd (vwm_frame *this) {
 }
 
 static char *frame_get_logfile (vwm_frame *this) {
-  return this->logfile;
+  return this->logfile->bytes;
 }
 
 static void frame_clear (vwm_frame *this, int state) {
@@ -3003,14 +3068,13 @@ static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
   self(release_log);
 
   if (NULL is fname) {
-    tmpname_t t = tmpfname (this->root->prop->tmpdir, "libvwm");
+    tmpname_t t = tmpfname (this->root->prop->tmpdir->bytes, "libvwm");
     if (-1 is t.fd)
       return NOTOK;
 
     this->logfd = t.fd;
-    this->logfile = strdup (t.fname->bytes);
+    this->logfile = t.fname;
     this->remove_log = remove_log;
-    tmpfname_free (&t);
 
     return this->logfd;
   }
@@ -3021,7 +3085,7 @@ static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
 
   if (-1 is fchmod (this->logfd, 0600)) return NOTOK;
 
-  this->logfile = strdup (fname);
+  this->logfile = string_new_with (fname);
   this->remove_log = remove_log;
   return this->logfd;
 }
@@ -3053,7 +3117,8 @@ static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
 
   frame->pid = opts.pid;
   frame->fd = opts.fd;
-  frame->logfile = opts.logfile;
+  frame->logfile = NULL;
+  frame->remove_log = opts.remove_log;
   frame->num_rows = opts.rows;
   frame->first_row = opts.first_row;
 
@@ -3067,10 +3132,9 @@ static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
       Vframe.set.command (frame, opts.command);
 
   frame->logfd = -1;
-  frame->remove_log = 0;
 
   if (opts.enable_log)
-    Vframe.set.log (frame, frame->logfile, frame->remove_log);
+    Vframe.set.log (frame, opts.logfile, frame->remove_log);
 
   frame->mb_buf[0] = '\0';
   frame->mb_curlen = frame->mb_len = frame->mb_code = 0;
@@ -3079,8 +3143,10 @@ static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
 
   frame->process_output_cb = (NULL is opts.process_output_cb ?
       frame_process_output_cb : opts.process_output_cb);
+
   frame->at_fork_cb = (NULL is opts.at_fork_cb ?
       frame_at_fork_default_cb : opts.at_fork_cb);
+
   frame->unimplemented_cb = frame_unimplemented_default_cb;
 
   frame->videomem = vwm_alloc_ints (frame->num_rows, frame->num_cols, 0);
@@ -3186,10 +3252,13 @@ static void frame_release_log (vwm_frame *this) {
   if (NULL is this->logfile) return;
 
   if (this->remove_log)
-    unlink (this->logfile);
+    unlink (this->logfile->bytes);
 
-  free (this->logfile);
+  string_free (this->logfile);
   this->logfile = NULL;
+
+  close (this->logfd);
+  this->logfd = -1;
 }
 
 static void win_release_frame_at (vwm_win *this, int idx) {
@@ -3586,12 +3655,11 @@ static int frame_edit_log (vwm_frame *frame) {
 
   for (int i = 0; i < frame->num_rows; i++) {
     char buf[(frame->num_cols * 3) + 2];
-    len = vt_video_line_to_str (frame->videomem[i], buf,
-    frame->num_cols);
+    len = vt_video_line_to_str (frame->videomem[i], buf, frame->num_cols);
     write (frame->logfd, buf, len);
   }
 
-  $my(edit_file_cb) (this, frame->logfile, $my(objects)[VWMED_OBJECT]);
+  $my(edit_file_cb) (this, frame->logfile->bytes, $my(objects)[VWMED_OBJECT]);
 
   vt_video_add_log_lines (frame);
   Vwin.draw (win);
@@ -4376,12 +4444,15 @@ public vwm_t *__init_vwm__ (void) {
         .at_exit_cb = vwm_set_at_exit_cb,
         .edit_file_cb = vwm_set_edit_file_cb,
         .debug = (vwm_set_debug_self) {
-          .sequences = vwm_set_debug_sequences
+          .sequences = vwm_set_debug_sequences,
+          .unimplemented = vwm_set_debug_unimplemented
         },
       },
       .unset = (vwm_unset_self) {
+        .tmpdir = vwm_unset_tmpdir,
         .debug = (vwm_unset_debug_self) {
-          .sequences = vwm_unset_debug_sequences
+          .sequences = vwm_unset_debug_sequences,
+          .unimplemented = vwm_unset_debug_unimplemented
         }
       },
       .new = (vwm_new_self) {
@@ -4470,8 +4541,6 @@ public vwm_t *__init_vwm__ (void) {
   $my(default_app) = string_new_with (DEFAULT_APP);
   $my(mode_key) = MODE_KEY;
 
-  $my(sequences_fp) = NULL;
-
   $my(length) = 0;
   $my(cur_idx) = -1;
   $my(head) = $my(tail) = $my(current) = NULL;
@@ -4480,13 +4549,20 @@ public vwm_t *__init_vwm__ (void) {
   $my(objects)[VWMED_OBJECT] = NULL;
 
   self(new.term);
+
   self(set.rline_cb, vwm_default_rline_cb);
   self(set.on_tab_cb, vwm_default_on_tab_cb);
   self(set.edit_file_cb, vwm_default_edit_file_cb);
   self(set.tmpdir, NULL, 0);
 
+  $my(sequences_fp) = NULL;
+  $my(sequences_fname) = NULL;
+  $my(unimplemented_fp) = NULL;
+  $my(unimplemented_fname) = NULL;
+
 #ifdef DEBUG
-    self(set.debug.sequences, NULL);
+  self(set.debug.sequences, NULL);
+  self(set.debug.unimplemented, NULL);
 #endif
 
   VWM = this;
@@ -4495,6 +4571,7 @@ public vwm_t *__init_vwm__ (void) {
 
 public void __deinit_vwm__ (vwm_t **thisp) {
   if (NULL == *thisp) return;
+
   vwm_t *this = *thisp;
 
   Vterm.orig_mode ($my(term));
@@ -4513,9 +4590,9 @@ public void __deinit_vwm__ (vwm_t **thisp) {
   if ($my(num_at_exit_cbs))
     free ($my(at_exit_cbs));
 
-  free ($my(tmpdir));
-
   self(unset.debug.sequences);
+  self(unset.debug.unimplemented);
+  self(unset.tmpdir);
 
   string_release ($my(editor));
   string_release ($my(shell));

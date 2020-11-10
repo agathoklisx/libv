@@ -112,7 +112,8 @@ typedef struct frame_opts {
     argc,
     rows,
     first_row,
-    enable_log;
+    enable_log,
+    remove_log;
 
   pid_t pid;
 
@@ -131,6 +132,7 @@ typedef struct frame_opts {
   .rows = -1,                         \
   .first_row = -1,                    \
   .enable_log = 0,                    \
+  .remove_log = 1,                    \
   .process_output_cb = NULL,          \
   .at_fork_cb = NULL,                 \
   __VA_ARGS__ }
@@ -339,16 +341,19 @@ typedef struct vwm_get_self {
 
 typedef struct vwm_unset_debug_self {
   void
-    (*sequences) (vwm_t *);
+    (*sequences) (vwm_t *),
+    (*unimplemented) (vwm_t *);
 } vwm_unset_debug_self;
 
 typedef struct vwm_unset_self {
   vwm_unset_debug_self debug;
+  void (*tmpdir) (vwm_t *);
 } vwm_unset_self;
 
 typedef struct vwm_set_debug_self {
   void
-    (*sequences) (vwm_t *, char *);
+    (*sequences) (vwm_t *, char *),
+    (*unimplemented) (vwm_t *, char *);
 } vwm_set_debug_self;
 
 typedef struct vwm_set_self {
@@ -360,7 +365,6 @@ typedef struct vwm_set_self {
     (*state)  (vwm_t *, int),
     (*shell)  (vwm_t *, char *),
     (*editor) (vwm_t *, char *),
-    (*tmpdir) (vwm_t *, char *, size_t),
     (*object) (vwm_t *, void *, int),
     (*mode_key) (vwm_t *, char),
     (*default_app) (vwm_t *, char *),
@@ -368,6 +372,8 @@ typedef struct vwm_set_self {
     (*on_tab_cb) (vwm_t *, VwmOnTab_cb),
     (*at_exit_cb) (vwm_t *, VwmAtExit_cb),
     (*edit_file_cb) (vwm_t *, VwmEditFile_cb);
+
+  int (*tmpdir) (vwm_t *, char *, size_t);
 
   vwm_win *(*current_at) (vwm_t *, int);
 
