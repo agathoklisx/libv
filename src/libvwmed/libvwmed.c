@@ -86,31 +86,46 @@ private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
   vwm_info *vinfo = Vwm.get.info (vwm);
 
   fprintf (fp, "==- Vwm Info -==\n");
-  fprintf (fp, "Master Pid %d\n", vinfo->pid);
-  fprintf (fp, "num_win %d\n", vinfo->num_win);
+  fprintf (fp, "Master Pid         : %d\n", vinfo->pid);
+  fprintf (fp, "Sequences fname    : %s\n", vinfo->sequences_fname);
+  fprintf (fp, "Unimplemented fname: %s\n", vinfo->unimplemented_fname);
+  fprintf (fp, "Num windows        : %d\n", vinfo->num_win);
 
   for (int widx = 0; widx < vinfo->num_win; widx++) {
     vwin_info *w_info = vinfo->wins[widx];
-    fprintf (fp, "num_frames %d\n", w_info->num_frames);
+    fprintf (fp, "\n--= window [%d]--=\n", widx + 1);
+    fprintf (fp, "Window name        : %s\n", w_info->name);
+    fprintf (fp, "Num rows           : %d\n", w_info->num_rows);
+    fprintf (fp, "Num frames         : %d\n", w_info->num_frames);
+    fprintf (fp, "Visible frames     : %d\n", w_info->num_visible_frames);
 
     for (int fidx = 0; fidx < w_info->num_frames; fidx++) {
       vframe_info *f_info = w_info->frames[fidx];
-      fprintf (fp, "frame pid %d\n", f_info->pid);
-      fprintf (fp, "argv: ");
+      fprintf (fp, "\n--= %s frame [%d] =--\n", w_info->name, fidx);
+      fprintf (fp, "At frame           : %d\n", f_info->at_frame);
+      fprintf (fp, "Frame pid          : %d\n", f_info->pid);
+      fprintf (fp, "Frame first row    : %d\n", f_info->first_row);
+      fprintf (fp, "Frame last row     : %d\n", f_info->last_row);
+      fprintf (fp, "Frame is visible   : %d\n", f_info->is_visible);
+      fprintf (fp, "Frame logfile      : %s\n", f_info->logfile);
+      fprintf (fp, "Frame argv         :");
+
       int arg = 0;
       while (f_info->argv[arg])
-        fprintf (fp, "%s ", f_info->argv[arg++]);
+        fprintf (fp, " %s", f_info->argv[arg++]);
       fprintf (fp, "\n");
     }
   }
 
-  fclose (fp);
+  fflush (fp);
 
   $my(state) |= (VWMED_BUF_IS_PAGER|VWMED_BUF_HASNOT_EMPTYLINE|
                  VWMED_BUF_DONOT_SHOW_STATUSLINE|VWMED_BUF_DONOT_SHOW_TOPLINE);
 
   vwmed_edit_file_cb (vwm, tmpn->fname->bytes, this);
+
   Vwm.release_info (vwm, &vinfo);
+  File.tmpfname.free (tmpn);
 }
 
 private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
@@ -191,7 +206,7 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
 
     if (NULL is a_commands) {
       for (int i = 0; i < num_frames; i++)
-          w_opts.frame_opts[i].command = command;
+        w_opts.frame_opts[i].command = command;
     } else {
       int num = 0;
       vstring_t *it = a_commands->head;

@@ -201,6 +201,7 @@ struct vwm_frame {
     first_col,
     scroll_first_row,
     param_idx,
+    is_visible,
     remove_log,
     saved_row_pos,
     saved_col_pos,
@@ -1339,6 +1340,10 @@ static vwm_info *vwm_get_info (vwm_t *this) {
   vwm_info *vinfo = Alloc (sizeof (vwm_info));
   vinfo->pid = getpid ();
   vinfo->num_win = $my(length);
+  vinfo->sequences_fname = (NULL is $my(sequences_fname) ? "" :
+      $my(sequences_fname)->bytes);
+  vinfo->unimplemented_fname = (NULL is $my(unimplemented_fname) ? "" :
+      $my(unimplemented_fname)->bytes);
 
   vinfo->wins = Alloc (sizeof (vwin_info *) * $my(length));
   vwm_win *win = $my(head);
@@ -1346,14 +1351,25 @@ static vwm_info *vwm_get_info (vwm_t *this) {
   while (win and idx < vinfo->num_win) {
     vwin_info *winfo = Alloc (sizeof (vwin_info));
     vinfo->wins[idx++] = winfo;
+    winfo->name = win->name;
+    winfo->num_rows = win->num_rows;
+    winfo->num_cols = win->num_cols;
+    winfo->num_visible_frames = Vwin.get.num_visible_frames (win);
     winfo->num_frames = win->length;
     winfo->frames = Alloc (sizeof (vframe_info) * win->length);
     vwm_frame *frame = win->head;
     int fidx = 0;
+    int at_frame = 0;
     while (frame and fidx < win->length) {
       vframe_info *finfo = Alloc (sizeof (vframe_info));
       winfo->frames[fidx++] = finfo;
       finfo->pid = frame->pid;
+      finfo->first_row = frame->first_row;
+      finfo->last_row = frame->first_row + frame->num_rows - 1;
+      finfo->is_visible = frame->is_visible;
+      finfo->at_frame = (frame->is_visible ? at_frame++ : -1);
+      finfo->logfile = (NULL is frame->logfile ? "" : frame->logfile->bytes);
+
       int arg = 0;
       for (; arg < frame->argc; arg++)
         finfo->argv[arg] = frame->argv[arg];
@@ -2932,6 +2948,10 @@ static void frame_set_command (vwm_frame *this, char *command) {
   this->argv = parse_command (command, &this->argc);
 }
 
+static void frame_set_visibility (vwm_frame *this, int visibility) {
+  this->is_visible = (0 isnot visibility);
+}
+
 static void frame_set_argv (vwm_frame *this, int argc, char **argv) {
   if (argc <= 0) return;
 
@@ -2958,6 +2978,10 @@ static int frame_get_fd (vwm_frame *this) {
 
 static pid_t frame_get_pid (vwm_frame *this) {
   return this->pid;
+}
+
+static int frame_get_visibility (vwm_frame *this) {
+  return this->is_visible;
 }
 
 static int frame_get_argc (vwm_frame *this) {
@@ -3106,10 +3130,8 @@ static int win_append_frame (vwm_win *this, vwm_frame *frame) {
   return DListAppend (this, frame);
 }
 
-static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
+static vwm_frame *win_init_frame (vwm_win *this, frame_opts opts) {
   vwm_frame *frame = Alloc (sizeof (vwm_frame));
-  self(append_frame, frame);
-
   frame->parent = this;
   frame->root = this->parent;
   frame->win = this->self;
@@ -3119,6 +3141,7 @@ static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
   frame->fd = opts.fd;
   frame->logfile = NULL;
   frame->remove_log = opts.remove_log;
+  frame->is_visible = opts.is_visible;
   frame->num_rows = opts.rows;
   frame->first_row = opts.first_row;
 
@@ -3161,10 +3184,22 @@ static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
       frame->tabstops[i] = 0;
   }
 
-  vt_frame_reset (frame);
+  if (opts.create_fd)
+    Vframe.create_fd (frame);
 
-  if (frame->argc)
+  if (opts.fork and frame->argc)
     Vframe.fork (frame);
+
+  return frame;
+
+}
+
+static vwm_frame *win_new_frame (vwm_win *this, frame_opts opts) {
+  vwm_frame *frame = self(init_frame, opts);
+
+  self(append_frame, frame);
+
+  vt_frame_reset (frame);
 
   return frame;
 }
@@ -3174,21 +3209,26 @@ static vwm_frame *win_pop_frame_at (vwm_win *this, int idx) {
 }
 
 static vwm_frame *win_add_frame (vwm_win *this, int argc, char **argv, int draw) {
-  if (this->length is this->max_frames) return NULL;
+  int num_frames = self(get.num_visible_frames);
 
-  this->num_separators = this->length;
+  if (num_frames is this->max_frames) return NULL;
+
+  this->num_separators = num_frames;
   int frame_rows = 0;
-  int mod = self(frame_rows, this->length + 1, &frame_rows);
+  int mod = self(frame_rows, num_frames + 1, &frame_rows);
   int
     num_rows = frame_rows + mod,
     first_row = this->first_row;
 
   vwm_frame *frame = this->head;
   while (frame) {
+    ifnot (frame->is_visible) goto next_frame;
+
     frame->new_rows = num_rows;
     first_row += num_rows + 1;
     num_rows = frame_rows;
-    frame = frame->next;
+
+    next_frame: frame = frame->next;
   }
 
   frame = self(new_frame, FrameOpts (.rows = num_rows, .first_row = first_row));
@@ -3214,9 +3254,10 @@ static int win_delete_frame (vwm_win *this, vwm_frame *frame, int draw) {
   ifnot (this->length)
     return OK;
 
-  this->num_separators--;
+  if (frame->is_visible)
+    this->num_separators--;
 
-  if (1 is this->length) {
+  if (1 is this->length or 0 is frame->is_visible) {
     Vframe.kill_proc (frame);;
     self(release_frame_at, 0);
   } else {
@@ -3226,17 +3267,21 @@ static int win_delete_frame (vwm_win *this, vwm_frame *frame, int draw) {
     self(release_frame_at, idx);
 
     int frame_rows = 0;
-    int mod = self(frame_rows, this->length, &frame_rows);
+    int num_frames = self(get.num_visible_frames);
+    int mod = self(frame_rows, num_frames, &frame_rows);
     int
       num_rows = frame_rows + mod,
       first_row = this->first_row;
 
     frame = this->head;
     while (frame) {
+      ifnot (frame->is_visible) goto next_frame;
+
       frame->new_rows = num_rows;
       first_row += num_rows + 1;
       num_rows = frame_rows;
-      frame = frame->next;
+
+      next_frame: frame = frame->next;
     }
 
     if (is_last_frame)
@@ -3306,11 +3351,13 @@ static int win_set_separators (vwm_win *this, int draw) {
 
   vwm_frame *frame = this->head->next;
   for (int i = 0; i < this->num_separators; i++) {
+    ifnot (frame->is_visible) goto next_frame;
+
     vwm_make_separator (this->separators_buf,
        (frame->prev is this->current ? COLOR_FOCUS : COLOR_UNFOCUS),
         frame->num_cols, frame->prev->first_row + frame->prev->last_row, frame->first_col);
 
-    frame = frame->next;
+    next_frame: frame = frame->next;
   }
 
   if (DRAW is draw)
@@ -3341,6 +3388,8 @@ static void win_draw (vwm_win *this) {
 
   vwm_frame *frame = this->head;
   while (frame) {
+    ifnot (frame->is_visible) goto next_frame;
+
     vt_goto (render, frame->first_row, 1);
 
     for (int i = 0; i < frame->num_rows; i++) {
@@ -3386,7 +3435,7 @@ static void win_draw (vwm_win *this) {
     vt_goto (render, frame->row_pos + frame->first_row - 1, frame->col_pos);
     */
 
-    frame = frame->next;
+    next_frame: frame = frame->next;
   }
 
   self(set.separators, DONOT_DRAW);
@@ -3400,20 +3449,22 @@ static void win_draw (vwm_win *this) {
 
 static void win_on_resize (vwm_win *this, int draw) {
   int frow = 1;
-  vwm_frame *it = this->head;
-  while (it) {
-    Vframe.on_resize (it, it->new_rows, it->num_cols);
-    it->num_rows = it->new_rows;
-    it->last_row = it->num_rows;
-    it->first_row = frow;
-    frow += it->num_rows + 1;
-    if (it->argv and it->pid isnot -1) {
-      struct winsize ws = {.ws_row = it->num_rows, .ws_col = it->num_cols};
-      ioctl (it->fd, TIOCSWINSZ, &ws);
-      kill (it->pid, SIGWINCH);
+  vwm_frame *frame = this->head;
+  while (frame) {
+    ifnot (frame->is_visible) goto next_frame;
+
+    Vframe.on_resize (frame, frame->new_rows, frame->num_cols);
+    frame->num_rows = frame->new_rows;
+    frame->last_row = frame->num_rows;
+    frame->first_row = frow;
+    frow += frame->num_rows + 1;
+    if (frame->argv and frame->pid isnot -1) {
+      struct winsize ws = {.ws_row = frame->num_rows, .ws_col = frame->num_cols};
+      ioctl (frame->fd, TIOCSWINSZ, &ws);
+      kill (frame->pid, SIGWINCH);
     }
 
-    it = it->next;
+    next_frame: frame = frame->next;
   }
 
   if (draw)
@@ -3421,7 +3472,9 @@ static void win_on_resize (vwm_win *this, int draw) {
 }
 
 static int win_min_rows (vwm_win *this) {
-  return this->num_rows - (this->length - this->num_separators - (this->length * 2));
+  int num_frames = self(get.num_visible_frames);
+  return this->num_rows - num_frames -
+      this->num_separators - (num_frames * 2);
 }
 
 static void win_frame_increase_size (vwm_win *this, vwm_frame *frame, int param, int draw) {
@@ -3435,16 +3488,17 @@ static void win_frame_increase_size (vwm_win *this, vwm_frame *frame, int param,
 
   int num_lines;
   int mod;
+  int num_frames = self(get.num_visible_frames);
 
-  if (param is 1 or param is this->length - 1) {
+  if (param is 1 or param is num_frames - 1) {
     num_lines = 1;
     mod = 0;
-  } else if (param > this->length - 1) {
-    num_lines = param / (this->length - 1);
-    mod = param % (this->length - 1);
+  } else if (param > num_frames - 1) {
+    num_lines = param / (num_frames - 1);
+    mod = param % (num_frames - 1);
   } else {
-    num_lines = (this->length - 1) / param;
-    mod = (this->length - 1) % param;
+    num_lines = (num_frames - 1) / param;
+    mod = (num_frames - 1) % param;
   }
 
   int orig_param = param;
@@ -3457,8 +3511,8 @@ static void win_frame_increase_size (vwm_win *this, vwm_frame *frame, int param,
 
   fr = this->head;
   int iter = 1;
-  while (fr and param and iter++ < ((this->length - 1) * 3)) {
-    if (frame is fr)
+  while (fr and param and iter++ < ((num_frames - 1) * 3)) {
+    if (frame is fr or frame->is_visible is 0)
       goto next_frame;
 
     int num = num_lines;
@@ -3500,15 +3554,17 @@ static void win_frame_decrease_size (vwm_win *this, vwm_frame *frame, int param,
 
   int num_lines;
   int mod;
-  if (param is 1 or param is this->length - 1) {
+  int num_frames = self(get.num_visible_frames);
+
+  if (param is 1 or param is num_frames - 1) {
     num_lines = 1;
     mod = 0;
-  } else if (param > this->length - 1) {
-    num_lines = param / (this->length - 1);
-    mod = param % (this->length - 1);
+  } else if (param > num_frames - 1) {
+    num_lines = param / (num_frames - 1);
+    mod = param % (num_frames - 1);
   } else {
-    num_lines = (this->length - 1) / param;
-    mod = (this->length - 1) % param;
+    num_lines = (num_frames - 1) / param;
+    mod = (num_frames - 1) % param;
   }
 
   vwm_frame *fr = this->head;
@@ -3522,7 +3578,7 @@ static void win_frame_decrease_size (vwm_win *this, vwm_frame *frame, int param,
   fr = this->head;
   int iter = 1;
   while (fr and param and iter++ < ((this->length - 1) * 3)) {
-    if (frame is fr)
+    if (frame is fr or frame->is_visible is 0)
       goto next_frame;
 
     fr->new_rows = fr->num_rows + num_lines;
@@ -3558,21 +3614,48 @@ static void win_frame_set_size (vwm_win *this, vwm_frame *frame, int param, int 
 }
 
 static vwm_frame *win_frame_change (vwm_win *this, vwm_frame *frame, int dir, int draw) {
-  if (NULL is frame->next and NULL is frame->prev)
+  int num_frames = self(get.num_visible_frames);
+  if ((NULL is frame->next and NULL is frame->prev) or 1 is num_frames)
     return frame;
 
   int idx = -1;
 
+  vwm_frame *lframe = frame;
+
+again:
   if (dir is DOWN_POS) {
-    ifnot (NULL is frame->next)
-      idx = self(get.frame_idx, frame->next);
-    else
+    if (NULL is lframe->next) {
       idx = 0;
+      while (lframe) {
+        if (lframe->is_visible)  break;
+        idx++;
+        lframe = lframe->next;
+      }
+    } else {
+      if (lframe->next->is_visible) {
+        idx = self(get.frame_idx, lframe->next);
+      } else {
+        lframe = lframe->next;
+        goto again;
+      }
+    }
   } else {
-    ifnot (NULL is frame->prev)
-      idx = self(get.frame_idx, frame->prev);
-    else
+    if (NULL is lframe->prev) {
       idx = this->length - 1;
+      while (lframe) {
+        if (lframe->is_visible)
+          break;
+        idx--;
+        lframe = lframe->prev;
+      }
+    } else {
+      if (lframe->prev->is_visible) {
+        idx = self(get.frame_idx, lframe->prev);
+      } else {
+        lframe = lframe->prev;
+        goto again;
+      }
+    }
   }
 
   this->last_frame = frame;
@@ -3678,6 +3761,17 @@ static char *vwm_name_gen (int *name_gen, char *prefix, size_t prelen) {
 
 static int win_get_num_frames (vwm_win *this) {
   return this->length;
+}
+
+static int win_get_num_visible_frames (vwm_win *this) {
+  int num = 0;
+  vwm_frame *it = this->head;
+  while (it) {
+    num += it->is_visible;
+    it = it->next;
+  }
+
+  return num;
 }
 
 static vwm_frame *win_get_current_frame (vwm_win *this) {
@@ -3979,7 +4073,8 @@ static void vwm_handle_sigwinch (vwm_t *this) {
     win->last_row = win->num_rows;
 
     int frame_rows = 0;
-    int mod = Vwin.frame_rows (win, win->length, &frame_rows);
+    int num_frames = Vwin.get.num_visible_frames (win);
+    int mod = Vwin.frame_rows (win, num_frames, &frame_rows);
 
     int
       num_rows = frame_rows + mod,
@@ -3987,6 +4082,8 @@ static void vwm_handle_sigwinch (vwm_t *this) {
 
     vwm_frame *frame = win->head;
     while (frame) {
+      ifnot (frame->is_visible) goto next_frame;
+
       Vframe.on_resize (frame, num_rows, win->num_cols);
       frame->first_row = first_row;
       frame->num_rows = num_rows;
@@ -3999,7 +4096,7 @@ static void vwm_handle_sigwinch (vwm_t *this) {
         kill (frame->pid, SIGWINCH);
       }
 
-      frame = frame->next;
+      next_frame: frame = frame->next;
     }
     win = win->next;
   }
@@ -4067,15 +4164,18 @@ static int vwm_main (vwm_t *this) {
     frame = frame->next;
   }
 
-  for (;;) {
+#define forever for (;;)
+
+  forever {
     win = $my(current);
     if (NULL is win) {
       retval = OK;
       break;
     }
 
-check_length:
-    ifnot (win->length) {
+    check_length:
+
+    ifnot (Vwin.get.num_visible_frames (win)) { // at_no_length_cb
       retval = OK;
       if (1 isnot $my(length))
         self(change_win, win, PREV_POS, DRAW);
@@ -4095,7 +4195,10 @@ check_length:
     FD_SET (STDIN_FILENO, &read_mask);
 
     frame = win->head;
+    int num_frames = 0;
     while (frame) {
+      ifnot (frame->is_visible) goto frame_next;
+
       if (frame->pid isnot -1) {
         if (0 is Vframe.check_pid (frame)) {
           vwm_frame *tmp = frame->next;
@@ -4107,14 +4210,17 @@ check_length:
 
       if (frame->fd isnot -1) {
         FD_SET (frame->fd, &read_mask);
+        num_frames++;
+
         if (maxfd <= frame->fd)
           maxfd = frame->fd + 1;
       }
 
+frame_next:
       frame = frame->next;
     }
 
-    if (win->length is 0) goto check_length;
+    ifnot (num_frames) goto check_length;
 
     if (0 >= (numready = select (maxfd, &read_mask, NULL, NULL, tv))) {
       switch (errno) {
@@ -4144,7 +4250,7 @@ check_length:
 
     frame = win->head;
     while (frame) {
-      if (frame->fd is -1)
+      if (frame->fd is -1 or 0 is frame->is_visible)
         goto next_frame;
 
       output_buf[0] = '\0';
@@ -4477,6 +4583,7 @@ public vwm_t *__init_vwm__ (void) {
       .on_resize = win_on_resize,
       .new_frame = win_new_frame,
       .add_frame = win_add_frame,
+      .init_frame = win_init_frame,
       .frame_rows = win_frame_rows,
       .append_frame = win_append_frame,
       .delete_frame = win_delete_frame,
@@ -4491,6 +4598,7 @@ public vwm_t *__init_vwm__ (void) {
         .frame_at = win_get_frame_at,
         .frame_idx = win_get_frame_idx,
         .num_frames = win_get_num_frames,
+        .num_visible_frames = win_get_num_visible_frames,
         .current_frame = win_get_current_frame
       },
       .frame = (vwm_win_frame_self) {
@@ -4518,14 +4626,16 @@ public vwm_t *__init_vwm__ (void) {
         .argv = frame_get_argv,
         .root = frame_get_root,
         .logfd = frame_get_logfd,
+        .parent = frame_get_parent,
         .logfile = frame_get_logfile,
-        .parent = frame_get_parent
+        .visibility = frame_get_visibility
       },
       .set = (vwm_frame_set_self) {
         .fd = frame_set_fd,
         .log = frame_set_log,
         .argv = frame_set_argv,
         .command = frame_set_command,
+        .visibility = frame_set_visibility,
         .at_fork_cb = frame_set_at_fork_cb,
         .unimplemented_cb = frame_set_unimplemented_cb,
         .process_output_cb = frame_set_process_output_cb

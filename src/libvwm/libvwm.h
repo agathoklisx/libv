@@ -109,11 +109,14 @@ typedef struct frame_opts {
 
   int
     fd,
+    fork,
     argc,
     rows,
     first_row,
+    create_fd,
     enable_log,
-    remove_log;
+    remove_log,
+    is_visible;
 
   pid_t pid;
 
@@ -125,14 +128,17 @@ typedef struct frame_opts {
 #define FrameOpts(...) (frame_opts) { \
   .argv = NULL,                       \
   .argc = 0,                          \
+  .fork = 1,                          \
   .command = NULL,                    \
   .logfile = NULL,                    \
   .fd = -1,                           \
   .pid = -1,                          \
   .rows = -1,                         \
   .first_row = -1,                    \
+  .create_fd = 0,                     \
   .enable_log = 0,                    \
   .remove_log = 1,                    \
+  .is_visible = 1,                    \
   .process_output_cb = NULL,          \
   .at_fork_cb = NULL,                 \
   __VA_ARGS__ }
@@ -169,7 +175,12 @@ typedef struct win_opts {
   __VA_ARGS__ }
 
 typedef struct vframe_info {
+  char *logfile;
+
   int
+    first_row,
+    last_row,
+    is_visible,
     at_frame;
 
   pid_t pid;
@@ -178,17 +189,26 @@ typedef struct vframe_info {
 } vframe_info;
 
 typedef struct vwin_info {
+  char *name;
+
   int
-    num_frames;
+    num_rows,
+    num_cols,
+    num_frames,
+    num_visible_frames;
+
   vframe_info **frames;
 } vwin_info;
 
 typedef struct vwm_info {
+  char
+    *sequences_fname,
+    *unimplemented_fname;
+
   int
     num_win;
 
   pid_t pid;
-
   vwin_info **wins;
 } vwm_info;
 
@@ -221,7 +241,8 @@ typedef struct vwm_frame_get_self {
   int
     (*fd)  (vwm_frame *),
     (*argc) (vwm_frame *),
-    (*logfd) (vwm_frame *);
+    (*logfd) (vwm_frame *),
+    (*visibility) (vwm_frame *);
 
   pid_t (*pid) (vwm_frame *);
 
@@ -235,6 +256,7 @@ typedef struct vwm_frame_set_self {
     (*fd) (vwm_frame *, int),
     (*argv) (vwm_frame *, int, char **),
     (*command) (vwm_frame *, char *),
+    (*visibility) (vwm_frame *, int),
     (*unimplemented_cb) (vwm_frame *, FrameUnimplemented_cb);
 
   int (*log) (vwm_frame *, char *,  int);
@@ -277,7 +299,8 @@ typedef struct vwm_win_set_self {
 typedef struct vwm_win_get_self {
   int
     (*frame_idx) (vwm_win *, vwm_frame *),
-    (*num_frames) (vwm_win *);
+    (*num_frames) (vwm_win *),
+    (*num_visible_frames) (vwm_win *);
 
   vwm_frame
     *(*frame_at) (vwm_win *, int),
