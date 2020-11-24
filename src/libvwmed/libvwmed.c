@@ -2,12 +2,17 @@
 #define _XOPEN_SOURCE 700
 
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <unistd.h>
+#include <string.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <termios.h>
+#include <signal.h>
 #include <errno.h>
 
 #include <libv/libvwm.h>
@@ -34,9 +39,14 @@ struct vwmed_prop {
   string_t *topline;
   video_t  *video;
 
+  VwmEditFile_cb edit_file_cb;
+
   void *objects[NUM_OBJECTS];
   int state;
 };
+
+#define VWMED_SHM_FILE  "vwmed_shm"
+#define VWMED_SHM_ID    65
 
 #define VWMED_VFRAME_CLEAR_VIDEO_MEM    (1 << 0)
 #define VWMED_VFRAME_CLEAR_LOG          (1 << 1)
@@ -45,14 +55,9 @@ struct vwmed_prop {
 #define VWMED_BUF_HASNOT_EMPTYLINE      (1 << 4)
 #define VWMED_BUF_DONOT_SHOW_STATUSLINE (1 << 5)
 #define VWMED_BUF_DONOT_SHOW_TOPLINE    (1 << 6)
-
-private void ed_set_topline_vwmed (ed_t *ed, buf_t *buf) {
-  (void) ed; (void) buf;
-  video_t *video = Ed.get.video (ed);
-  string_t *topline = Ed.get.topline (ed);
-  String.replace_with (topline, "[Command Mode] VirtualWindowManager");
-  Video.set.row_with (video, 0, topline->bytes);
-}
+#define VWMED_RLINE_HAS_INIT_COMPLETION (1 << 7)
+#define VWMED_RLINE_SHOULD_RETURN       (1 << 8)
+#define VWMED_IPC                       (1 << 9)
 
 private void ed_set_topline_void (ed_t *ed, buf_t *buf) {
   (void) ed; (void) buf;
@@ -75,7 +80,71 @@ private string_t *filter_ed_rline (string_t *line) {
   return filter_ed_rline (line);
 }
 
-private int vwmed_edit_file_cb (vwm_t *, char *, void *);
+private int vwmed_process_frame (vwmed_t *this, vwm_win *win, vwm_frame *frame) {
+  int frame_fd = Vframe.get.fd (frame);
+
+  if (frame_fd is -1) return NOTOK;
+
+  fd_set read_mask;
+  struct timeval *tv = NULL;
+
+  char
+    input_buf[MAX_CHAR_LEN],
+    output_buf[BUFSIZE];
+
+  Vwin.set.frame (win, frame);
+
+  int
+    maxfd = frame_fd,
+    numready,
+    output_len;
+
+  for (;;) {
+    FD_ZERO (&read_mask);
+    FD_SET (STDIN_FILENO, &read_mask);
+
+    if (0 is Vframe.check_pid (frame))
+      goto theend;
+
+    FD_SET (frame_fd, &read_mask);
+
+    if (0 >= (numready = select (maxfd + 1, &read_mask, NULL, NULL, tv))) {
+      switch (errno) {
+        case EIO:
+        case EINTR:
+        default:
+          break;
+      }
+
+      continue;
+    }
+
+    for (int i = 0; i < MAX_CHAR_LEN; i++) input_buf[i] = '\0';
+
+    if (FD_ISSET (STDIN_FILENO, &read_mask)) {
+      if (0 < read (STDIN_FILENO, input_buf, 1))
+        write (frame_fd, input_buf, 1);
+    }
+
+    if (FD_ISSET (frame_fd, &read_mask)) {
+      output_buf[0] = '\0';
+      if (0 > (output_len = read (frame_fd, output_buf, BUFSIZE))) {
+        switch (errno) {
+          case EIO:
+          default:
+            Vframe.check_pid (frame);
+            goto theend;
+        }
+      }
+      output_buf[output_len] = '\0';
+
+      Vframe.process_output (frame, output_buf, output_len);
+    }
+  }
+
+theend:
+  return OK;
+}
 
 private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
   tmpfname_t *tmpn = File.tmpfname.new (Vwm.get.tmpdir (vwm), "vwmed_info");
@@ -90,24 +159,29 @@ private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
   fprintf (fp, "Sequences fname    : %s\n", vinfo->sequences_fname);
   fprintf (fp, "Unimplemented fname: %s\n", vinfo->unimplemented_fname);
   fprintf (fp, "Num windows        : %d\n", vinfo->num_win);
+  fprintf (fp, "Current window idx : %d\n", vinfo->cur_win_idx);
 
   for (int widx = 0; widx < vinfo->num_win; widx++) {
     vwin_info *w_info = vinfo->wins[widx];
     fprintf (fp, "\n--= window [%d]--=\n", widx + 1);
     fprintf (fp, "Window name        : %s\n", w_info->name);
+    fprintf (fp, "It is current      : %s\n", (w_info->is_current ? "Yes" : "No"));
     fprintf (fp, "Num rows           : %d\n", w_info->num_rows);
     fprintf (fp, "Num frames         : %d\n", w_info->num_frames);
     fprintf (fp, "Visible frames     : %d\n", w_info->num_visible_frames);
+    fprintf (fp, "Current frame idx  : %d\n", w_info->cur_frame_idx);
 
     for (int fidx = 0; fidx < w_info->num_frames; fidx++) {
       vframe_info *f_info = w_info->frames[fidx];
       fprintf (fp, "\n--= %s frame [%d] =--\n", w_info->name, fidx);
       fprintf (fp, "At frame           : %d\n", f_info->at_frame);
       fprintf (fp, "Frame pid          : %d\n", f_info->pid);
+      fprintf (fp, "Frame num rows     : %d\n", f_info->num_rows);
       fprintf (fp, "Frame first row    : %d\n", f_info->first_row);
       fprintf (fp, "Frame last row     : %d\n", f_info->last_row);
-      fprintf (fp, "Frame is visible   : %d\n", f_info->is_visible);
-      fprintf (fp, "Frame logfile      : %s\n", f_info->logfile);
+      fprintf (fp, "It is current      : %s\n", (f_info->is_current ? "Yes" : "No"));
+      fprintf (fp, "Frame is visible   : %s\n", (f_info->is_visible ? "Yes" : "No"));
+      fprintf (fp, "Frame logfile      : %s\n", (f_info->logfile[0] isnot 0 ? f_info->logfile : "Hasn't been set"));
       fprintf (fp, "Frame argv         :");
 
       int arg = 0;
@@ -118,21 +192,16 @@ private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
   }
 
   fflush (fp);
-
   $my(state) |= (VWMED_BUF_IS_PAGER|VWMED_BUF_HASNOT_EMPTYLINE|
                  VWMED_BUF_DONOT_SHOW_STATUSLINE|VWMED_BUF_DONOT_SHOW_TOPLINE);
 
-  vwmed_edit_file_cb (vwm, tmpn->fname->bytes, this);
+  $my(edit_file_cb) (vwm, Vwm.get.current_frame (vwm), tmpn->fname->bytes, this);
 
   Vwm.release_info (vwm, &vinfo);
-  File.tmpfname.free (tmpn);
+  //File.tmpfname.free (tmpn);
 }
 
-private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
-  (void) bufp; (void) c;
-  vwmed_t *this = (vwmed_t *) Rline.get.user_object (rl);
-  vwm_t *vwm = $my(objects)[VWM_OBJECT];
-
+private int vwmed_process_rline (vwmed_t *this, rline_t *rl, vwm_t *vwm, vwm_win *win, vwm_frame *frame) {
   int retval = RLINE_NO_COMMAND;
   string_t *com = Rline.get.command (rl);
 
@@ -144,8 +213,7 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
     goto theend;
 
   } else if (Cstring.eq (com->bytes, "frame_delete")) {
-    Vwin.delete_frame (Vwm.get.current_win (vwm),
-        Vwm.get.current_frame (vwm), DRAW);
+    Vwin.delete_frame (win, frame, DRAW);
     retval = OK;
     goto theend;
 
@@ -166,19 +234,18 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
     goto theend;
 
   } else if (Cstring.eq (com->bytes, "split_and_fork")) {
-    vwm_win *win = Vwm.get.current_win (vwm);
-    vwm_frame *frame = Vwin.add_frame (win, 0, NULL, DONOT_DRAW);
-    if (NULL is frame)  goto theend;
+    vwm_frame *n_frame = Vwin.add_frame (win, 0, NULL, DONOT_DRAW);
+    if (NULL is n_frame)  goto theend;
 
     string_t *command = Rline.get.anytype_arg (rl, "command");
     if (NULL is command) {
-      Vframe.set.command (frame, Vwm.get.default_app (vwm));
+      Vframe.set.command (n_frame, Vwm.get.default_app (vwm));
     } else {
       command = filter_ed_rline (command);
-      Vframe.set.command (frame, command->bytes);
+      Vframe.set.command (n_frame, command->bytes);
     }
 
-    Vframe.fork (frame);
+    Vframe.fork (n_frame);
 
     retval = OK;
     goto theend;
@@ -197,8 +264,8 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
     char *command = Vwm.get.default_app (vwm);
 
     win_opts w_opts = WinOpts (
-        .rows = Vwm.get.lines (vwm),
-        .cols = Vwm.get.columns (vwm),
+        .num_rows = Vwm.get.lines (vwm),
+        .num_cols = Vwm.get.columns (vwm),
         .num_frames = num_frames,
         .max_frames = MAX_FRAMES,
         .draw = draw,
@@ -233,8 +300,8 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
     line = filter_ed_rline (line);
 
     win_opts w_opts = WinOpts (
-        .rows = Vwm.get.lines (vwm),
-        .cols = Vwm.get.columns (vwm),
+        .num_rows = Vwm.get.lines (vwm),
+        .num_cols = Vwm.get.columns (vwm),
         .num_frames = 1,
         .max_frames = MAX_FRAMES,
         .focus = 1,
@@ -253,9 +320,9 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
       goto theend;
     int set_log = atoi (log_file->bytes);
     if (set_log)
-      Vframe.set.log (Vwm.get.current_frame (vwm), NULL, 1);
+      Vframe.set.log (frame, NULL, 1);
     else
-      Vframe.release_log (Vwm.get.current_frame (vwm));
+      Vframe.release_log (frame);
 
     retval = OK;
     goto theend;
@@ -267,15 +334,48 @@ private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
 
 theend:
   String.free (com);
+  return retval;
+}
 
+private int ed_rline_ipc_cb (vwmed_t *this, vwm_t *vwm, rline_t *rl) {
+  key_t key = ftok (STR_FMT ("%s/" VWMED_SHM_FILE, Vwm.get.tmpdir (vwm)), VWMED_SHM_ID);
+  int shmid = shmget (key, 1024, 0666|IPC_CREAT);
+  char *rline = (char *) shmat (shmid, (void *)0, 0);
+
+  string_t *sline = Rline.get.line (rl);
+  for (size_t i = 0; i < sline->num_bytes; i++)
+    rline[i] = sline->bytes[i];
+  rline[sline->num_bytes] = '\0';
+
+  shmdt (rline);
+  shmctl (shmid, IPC_RMID, NULL);
+  return OK;
+}
+
+private int ed_rline_cb (buf_t **bufp, rline_t *rl, utf8 c) {
+  (void) bufp; (void) c;
+
+  vwmed_t *this = (vwmed_t *) Rline.get.user_object (rl);
+  vwm_t *vwm = $my(objects)[VWM_OBJECT];
+
+  if ($my(state) & VWMED_IPC) {
+    $my(state) &= ~VWMED_IPC;
+    return ed_rline_ipc_cb (this, vwm, rl);
+  }
+
+  vwm_win *win = Vwm.get.current_win (vwm);
+  vwm_frame *frame = Vwin.get.current_frame (win);
+
+  int retval = vwmed_process_rline (this, rl, vwm, win, frame);
   return ed_exit ($my(ed), retval);
 }
 
-private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object, int should_return, int has_init_completion) {
+private int vwm_new_rline_fallback (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object, int should_return, int has_init_completion) {
   vwmed_t *this = (vwmed_t *) object;
 
   $my(win) = Ed.get.current_win ($my(ed));
   $my(buf) = Ed.get.current_buf ($my(ed));
+
   Win.draw ($my(win));
 
   rline_t *rl = NULL;
@@ -314,6 +414,122 @@ private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *obj
   return retval;
 }
 
+private int vwmed_rline_at_fork_cb (vwm_frame *frame, vwm_t *vwm, vwm_win *vwin) {
+  vwmed_t *this = vwm->self.get.object (vwm, VWMED_OBJECT);
+  (void) vwin; (void) frame;
+
+  $my(win) = Ed.get.current_win ($my(ed));
+  $my(buf) = Ed.get.current_buf ($my(ed));
+
+  signal (SIGWINCH, sigwinch_handler);
+  kill (getpid(), SIGWINCH);
+
+  Buf.set.on_emptyline ($my(buf), " ");
+  Buf.set.show_statusline ($my(buf), 0);
+  Ed.set.topline = ed_set_topline_void;
+
+  rline_t *rl = NULL;
+
+  if ($my(state) & VWMED_RLINE_HAS_INIT_COMPLETION) {
+    $my(state) &= ~VWMED_RLINE_HAS_INIT_COMPLETION;
+    rl = Ed.rline.new_with ($my(ed), "\t");
+  } else
+    rl = Ed.rline.new ($my(ed));
+
+  Rline.set.user_object (rl, (void *) this);
+  Rline.set.state_bit (rl, RL_PROCESS_CHAR);
+
+  if ($my(state) & VWMED_RLINE_SHOULD_RETURN) {
+    $my(state) &= ~VWMED_RLINE_SHOULD_RETURN;
+    Rline.set.opts_bit (rl, RL_OPT_RETURN_AFTER_TAB_COMPLETION);
+  }
+
+  $my(state) |= VWMED_IPC;
+
+  Buf.rline (&$my(buf), rl);
+
+  exit (ed_exit ($my(ed), 0));
+}
+
+private int vwm_new_rline (vwm_t *vwm, vwm_win *win, vwm_frame *cur_frame, void *object, int should_return, int has_init_completion) {
+  vwmed_t *this = (vwmed_t *) object;
+
+  int retval;
+  vframe_info *finfo = Vframe.get.info (cur_frame);
+
+  if (finfo->num_rows < Ed.get.min_rows ($my(ed))) {
+    retval = vwm_new_rline_fallback (vwm, win, cur_frame, object, should_return, has_init_completion);
+    Vframe.release_info (finfo);
+    return retval;
+  }
+
+  vwm_frame *frame = Vwin.new_frame (win, FrameOpts(
+      .first_row = finfo->first_row,
+      .num_rows = finfo->num_rows,
+      .at_frame = finfo->at_frame,
+      .fork = 0,
+      .is_visible = 0,
+      .create_fd = 1,
+      .at_fork_cb = vwmed_rline_at_fork_cb));
+
+  Vframe.release_info (finfo);
+
+  $my(win) = Ed.get.current_win ($my(ed));
+  $my(buf) = Ed.get.current_buf ($my(ed));
+
+  $my(state) &= ~(VWMED_RLINE_HAS_INIT_COMPLETION|VWMED_RLINE_SHOULD_RETURN);
+  if (has_init_completion) $my(state) |= VWMED_RLINE_HAS_INIT_COMPLETION;
+  if (should_return)       $my(state) |= VWMED_RLINE_SHOULD_RETURN;
+
+  Vframe.set.visibility (cur_frame, 0);
+  Vframe.set.visibility (frame, 1);
+  Vwin.set.frame_as_current (win, frame);
+
+  Vframe.fork (frame);
+
+  key_t key = ftok (STR_FMT ("%s/" VWMED_SHM_FILE, Vwm.get.tmpdir (vwm)), VWMED_SHM_ID);
+  int shmid = shmget (key, 1024, 0666|IPC_CREAT);
+  char *rline = (char *) shmat (shmid, (void *)0, 0);
+
+  vwmed_process_frame (this, win, frame);
+
+  Vframe.set.visibility (cur_frame, 1);
+  Vwin.set.frame_as_current (win, cur_frame);
+  Vframe.set.visibility (frame, 0);
+  Vwin.delete_frame (win, frame, DRAW);
+
+  rline_t *rl = Ed.rline.new_with ($my(ed), rline);
+
+  shmdt (rline);
+
+  rl = Rline.parse (rl, $my(buf));
+  retval = vwmed_process_rline (this, rl, vwm, win, cur_frame);
+
+  win = Vwm.get.current_win (vwm);
+
+  ifnot (Vwin.get.num_frames (win)) {
+    Vwm.change_win (vwm, win, PREV_POS, DONOT_DRAW);
+
+    Vwm.release_win (vwm, win);
+
+    win = Vwm.get.current_win (vwm);
+  }
+
+  ifnot (NULL is win) {
+    Vwin.draw (win);
+    if ($my(state) & VWMED_CLEAR_CURRENT_FRAME) {
+      $my(state) &= ~VWMED_CLEAR_CURRENT_FRAME;
+      Vframe.clear (cur_frame, $my(state));
+    }
+  }
+
+  Ed.set.topline = ed_set_topline_void;
+
+  Vterm.raw_mode (Vwm.get.term (vwm));
+
+  return retval;
+}
+
 private int vwmed_tab_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *object) {
   return vwm_new_rline (vwm, win, frame, object, 1, 1);
 }
@@ -322,14 +538,7 @@ private int vwmed_rline_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *ob
   return vwm_new_rline (vwm, win, frame, object, 0, 0);
 }
 
-private int vwmed_edit_file_cb (vwm_t *vwm, char *file, void *object) {
-  vwmed_t *this = (vwmed_t *) object;
-/*
-      .frow = 3,
-      .fcol = 8,
-      .lines = 16,
-      .columns = 20,
-*/
+private int vwmed_edit_file (vwmed_t *this, vwm_t *vwm, char *fname) {
   ed_t *ed = E.new ($my(__E__), EdOpts(
       .num_win = 1,
       .init_cb = __init_ext__,
@@ -341,7 +550,7 @@ private int vwmed_edit_file_cb (vwm_t *vwm, char *file, void *object) {
 
   int is_pager = $my(state) & VWMED_BUF_IS_PAGER;
   buf_t *buf = Win.buf.new (win, BufOpts(
-      .fname = file,
+      .fname = fname,
       .flags = (is_pager ? BUF_IS_PAGER : 0)));
 
   $my(state) &= ~VWMED_BUF_IS_PAGER;
@@ -372,11 +581,69 @@ private int vwmed_edit_file_cb (vwm_t *vwm, char *file, void *object) {
 
   E.delete ($my(__E__), E.get.idx ($my(__E__), ed), 0);
 
-  Ed.set.topline = ed_set_topline_vwmed;
+  Ed.set.topline = ed_set_topline_void;
 
   Vterm.raw_mode (Vwm.get.term (vwm));
 
   return retval;
+}
+
+private int vwmed_edit_file_at_fork_cb (vwm_frame *frame, vwm_t *vwm, vwm_win *vwin) {
+  (void) vwin;
+
+  vwmed_t *this = vwm->self.get.object (vwm, VWMED_OBJECT);
+
+  term_t *term = E.get.term ($my(__E__));
+  Term.set_mode (term, 'o');
+
+  char *fname = Vframe.get.argv (frame)[0];
+
+  vwmed_edit_file  (this, vwm, fname);
+  exit (0);
+}
+
+private int vwmed_edit_file_cb (vwm_t *vwm, vwm_frame *frame, char *fname, void *object) {
+  (void) vwm;
+  vwmed_t *this = (vwmed_t *) object;
+  vframe_info *finfo = Vframe.get.info (frame);
+
+  int retval;
+
+  if (finfo->num_rows < Ed.get.min_rows ($my(ed))) {
+    retval = vwmed_edit_file (this, vwm, fname);
+    Vframe.release_info (finfo);
+    return retval;
+  }
+
+  vwm_win *win = Vframe.get.parent (frame);
+
+  vwm_frame *n_frame = Vwin.new_frame (win, FrameOpts(
+      .command = fname,
+      .first_row = finfo->first_row,
+      .num_rows = finfo->num_rows,
+      .at_frame = finfo->at_frame,
+      .fork = 0,
+      .is_visible = 0,
+      .create_fd = 1,
+      .at_fork_cb = vwmed_edit_file_at_fork_cb));
+
+  Vframe.release_info (finfo);
+
+  Vframe.set.visibility (frame, 0);
+  Vframe.set.visibility (n_frame, 1);
+  Vwin.set.frame_as_current (win, n_frame);
+  Vframe.clear (frame, 0);
+
+  Vframe.fork (n_frame);
+
+  vwmed_process_frame (this, win, n_frame);
+
+  Vwin.set.frame_as_current (win, frame);
+  Vframe.set.visibility (frame, 1);
+  Vframe.set.visibility (n_frame, 0);
+  Vwin.delete_frame (win, n_frame, DRAW);
+
+  return OK;
 }
 
 private E_T *vwmed_get_e (vwmed_t *this) {
@@ -466,11 +733,10 @@ private int vwmed_init_ved (vwmed_t *this) {
   $my(topline) = Ed.get.topline ($my(ed));
 
   String.clear ($my(topline));
-  String.append ($my(topline), "[Command Mode] VirtualWindowManager");
   Video.set.row_with ($my(video), 0, $my(topline)->bytes);
 
   $my(orig_topline) = Ed.set.topline;
-  Ed.set.topline = ed_set_topline_vwmed;
+  Ed.set.topline = ed_set_topline_void;
 
   Vwm.set.rline_cb (vwm, vwmed_rline_cb);
   Vwm.set.on_tab_cb (vwm, vwmed_tab_cb);
@@ -516,6 +782,7 @@ public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
   $my(__E__)    = $my(__This__)->__E__;
 
   $my(state) = 0;
+  $my(edit_file_cb) = vwmed_edit_file_cb;
 
   if (NULL is vwm)
     vwm = __init_vwm__ ();

@@ -53,8 +53,8 @@ int main (int argc, char **argv) {
   Vwm.set.size (this, rows, cols, 1);
 
   vwm_win *win = Vwm.new.win (this, "v", WinOpts (
-    .rows = rows,
-    .cols = cols,
+    .num_rows = rows,
+    .num_cols = cols,
     .num_frames = 2,
     .max_frames = 3));
 
@@ -70,8 +70,8 @@ int main (int argc, char **argv) {
   Vframe.set.log (frame, NULL, 1);
 
   win = Vwm.new.win (this, NULL, WinOpts (
-    .rows =rows,
-    .cols = cols,
+    .num_rows =rows,
+    .num_cols = cols,
     .num_frames = 1,
     .max_frames = 3));
 

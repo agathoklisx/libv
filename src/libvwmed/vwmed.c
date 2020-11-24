@@ -26,8 +26,8 @@ int main (int argc, char **argv) {
   Vwmed.init.ved (vwmed);
 
   win_opts w_opts = WinOpts (
-      .rows = rows,
-      .cols = cols,
+      .num_rows = rows,
+      .num_cols = cols,
       .num_frames = 1,
       .max_frames = 3);
 

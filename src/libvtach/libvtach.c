@@ -793,8 +793,8 @@ private int vtach_pty_main_default (vtach_t *this, int argc, char **argv) {
   int cols = Vwm.get.columns (vwm);
 
   win_opts w_opts = WinOpts (
-      .rows = rows,
-      .cols = cols,
+      .num_rows = rows,
+      .num_cols = cols,
       .num_frames = 1,
       .max_frames = 2);
 

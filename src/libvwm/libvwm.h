@@ -36,6 +36,10 @@ typedef signed int utf8;
 #define MAXLEN_LINE 4096
 #endif
 
+#ifndef MAX_CHAR_LEN
+#define MAX_CHAR_LEN 4
+#endif
+
 #ifdef BUFIZE
 #undef BUFSIZE
 #endif
@@ -82,7 +86,7 @@ typedef void (*FrameUnimplemented_cb) (vwm_frame *, const char *, int, int);
 typedef void (*VwmAtExit_cb) (vwm_t *);
 typedef int  (*VwmOnTab_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*VwmRLine_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
-typedef int  (*VwmEditFile_cb) (vwm_t *, char *, void *);
+typedef int  (*VwmEditFile_cb) (vwm_t *, vwm_frame *, char *, void *);
 typedef int  (*FrameAtFork_cb) (vwm_frame *, vwm_t *, vwm_win *);
 
 struct vwm_term {
@@ -111,8 +115,11 @@ typedef struct frame_opts {
     fd,
     fork,
     argc,
-    rows,
+    at_frame,
+    num_rows,
+    num_cols,
     first_row,
+    first_col,
     create_fd,
     enable_log,
     remove_log,
@@ -123,6 +130,7 @@ typedef struct frame_opts {
   FrameProcessOutput_cb process_output_cb;
   FrameAtFork_cb        at_fork_cb;
 
+  vwm_win *parent;
 } frame_opts;
 
 #define FrameOpts(...) (frame_opts) { \
@@ -133,22 +141,26 @@ typedef struct frame_opts {
   .logfile = NULL,                    \
   .fd = -1,                           \
   .pid = -1,                          \
-  .rows = -1,                         \
+  .num_rows = -1,                     \
+  .num_cols = -1,                     \
+  .at_frame = -1,                     \
   .first_row = -1,                    \
+  .first_col = -1,                    \
   .create_fd = 0,                     \
   .enable_log = 0,                    \
   .remove_log = 1,                    \
   .is_visible = 1,                    \
   .process_output_cb = NULL,          \
   .at_fork_cb = NULL,                 \
+  .parent = NULL,                     \
   __VA_ARGS__ }
 
 typedef struct win_opts {
   int
-    rows,
-    cols,
     draw,
     focus,
+    num_rows,
+    num_cols,
     first_row,
     first_col,
     num_frames,
@@ -158,8 +170,8 @@ typedef struct win_opts {
 } win_opts;
 
 #define WinOpts(...) (win_opts) {  \
-  .rows = 24,                      \
-  .cols = 78,                      \
+  .num_rows = 24,                  \
+  .num_cols = 78,                  \
   .focus = 0,                      \
   .first_row = 1,                  \
   .first_col = 1,                  \
@@ -178,10 +190,12 @@ typedef struct vframe_info {
   char *logfile;
 
   int
-    first_row,
+    at_frame,
+    num_rows,
     last_row,
-    is_visible,
-    at_frame;
+    first_row,
+    is_current,
+    is_visible;
 
   pid_t pid;
 
@@ -195,6 +209,8 @@ typedef struct vwin_info {
     num_rows,
     num_cols,
     num_frames,
+    is_current,
+    cur_frame_idx,
     num_visible_frames;
 
   vframe_info **frames;
@@ -206,7 +222,8 @@ typedef struct vwm_info {
     *unimplemented_fname;
 
   int
-    num_win;
+    num_win,
+    cur_win_idx;
 
   pid_t pid;
   vwin_info **wins;
@@ -242,6 +259,7 @@ typedef struct vwm_frame_get_self {
     (*fd)  (vwm_frame *),
     (*argc) (vwm_frame *),
     (*logfd) (vwm_frame *),
+    (*num_rows) (vwm_frame *),
     (*visibility) (vwm_frame *);
 
   pid_t (*pid) (vwm_frame *);
@@ -249,6 +267,7 @@ typedef struct vwm_frame_get_self {
   vwm_win *(*parent) (vwm_frame *);
   vwm_t *(*root) (vwm_frame *);
 
+  vframe_info *(*info) (vwm_frame *);
 } vwm_frame_get_self;
 
 typedef struct vwm_frame_set_self {
@@ -271,9 +290,12 @@ typedef struct vwm_frame_self {
   vwm_frame_set_self set;
 
   void
+    (*reset) (vwm_frame *),
     (*clear) (vwm_frame *, int),
     (*on_resize) (vwm_frame *, int, int),
+    (*reopen_log) (vwm_frame *),
     (*release_log) (vwm_frame *),
+    (*release_info) (vframe_info *),
     (*release_argv) (vwm_frame *),
     (*process_output) (vwm_frame *, char *, int);
 
@@ -293,7 +315,9 @@ typedef struct vwm_win_set_self {
 
   int (*separators) (vwm_win *, int);
 
-  vwm_frame *(*current_at) (vwm_win *, int);
+  vwm_frame
+    *(*current_at) (vwm_win *, int),
+    *(*frame_as_current) (vwm_win *, vwm_frame *);
 } vwm_win_set_self;
 
 typedef struct vwm_win_get_self {
@@ -305,6 +329,8 @@ typedef struct vwm_win_get_self {
   vwm_frame
     *(*frame_at) (vwm_win *, int),
     *(*current_frame) (vwm_win *);
+
+  vwin_info *(*info) (vwm_win *);
 } vwm_win_get_self;
 
 typedef struct vwm_win_frame_self {
@@ -324,12 +350,14 @@ typedef struct vwm_win_self {
   void
     (*draw) (vwm_win *),
     (*on_resize) (vwm_win *, int),
-    (*release_frame_at)  (vwm_win *, int);
+    (*release_info) (vwin_info *),
+    (*release_frame_at) (vwm_win *, int);
 
   int
     (*frame_rows) (vwm_win *, int, int *),
     (*append_frame) (vwm_win *, vwm_frame *),
-    (*delete_frame) (vwm_win *, vwm_frame *, int);
+    (*delete_frame) (vwm_win *, vwm_frame *, int),
+    (*insert_frame_at) (vwm_win *, vwm_frame *, int);
 
   vwm_frame
     *(*init_frame) (vwm_win *, frame_opts),
