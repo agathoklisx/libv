@@ -22,6 +22,7 @@ This it can be set with:
   MODKEY-[up|down|w] : switch to the upper|lower frame respectively  
   MODKEY-[left|right]: switch to the prev|next window respectively  
   MODKEY-`           : switch to the previously focused window  
+  MODKEY-F[1-12]     : switch to `nth' window indicated by the digit of the Function Key    
   MODKEY-[param]+    : increase the size of the current frame (default count 1)  
   MODKEY-[param]-    : decrease the size of the current frame (default count 1)  
   MODKEY-[param]=    : set the lines (param) of the current frame  
@@ -41,14 +42,14 @@ Application Interface.
     .argc = argc,
     .argv = argv
   );
-  
+
   // initialize the structure
   // it returns a v_t *object or NULL on error
   v_t *v = __init_v__ (NULL, &opts);
-  
+
   // call the main function
   int retval = V.main (v);
-  
+
   // deinitialize the structure
   __deinit_v__ (&v);
 ```

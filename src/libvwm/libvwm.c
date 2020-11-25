@@ -1288,6 +1288,10 @@ static int vwm_get_win_idx (vwm_t *this, vwm_win *win) {
   return idx;
 }
 
+static vwm_win *vwm_get_win_at (vwm_t *this, int idx) {
+  return DListGetAt ($myprop, vwm_win, idx);
+}
+
 static vwm_win *vwm_get_current_win (vwm_t *this) {
   return $my(current);
 }
@@ -3808,7 +3812,9 @@ static void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
       break;
 
     default:
-      return;
+      idx = dir;
+      if (idx >= $my(length) or idx < 0) return;
+      break;
   }
 
   $my(last_win) = win;
@@ -4585,6 +4591,13 @@ getc_again:
       Vwin.frame.set_size (win, frame, param, DRAW);
       break;
 
+    case FN_KEY(1) ... FN_KEY(12): {
+        int idx = c - FN_KEY(1);
+        if (NULL is self(get.win_at, idx)) break;
+        self(change_win, win, idx, DRAW);
+      }
+      break;
+
     case '0':
     case '1':
     case '2':
@@ -4645,6 +4658,7 @@ public vwm_t *__init_vwm__ (void) {
         .object = vwm_get_object,
         .editor = vwm_get_editor,
         .tmpdir = vwm_get_tmpdir,
+        .win_at = vwm_get_win_at,
         .win_idx = vwm_get_win_idx,
         .columns = vwm_get_columns,
         .num_wins = vwm_get_num_wins,

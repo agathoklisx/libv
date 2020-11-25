@@ -53,11 +53,11 @@ typedef signed int utf8;
 #define U_OBJECT     4
 #define NUM_OBJECTS  U_OBJECT + 1
 
-#define DOWN_POS    2
-#define NEXT_POS    1
-#define LAST_POS    0
-#define PREV_POS   -1
-#define UP_POS     -2
+#define DOWN_POS    -1
+#define NEXT_POS    -2
+#define LAST_POS    -3
+#define PREV_POS    -4
+#define UP_POS      -5
 
 #define VWM_DONE           (1 << 0)
 #define VWM_IGNORE_FOR_NOW (1 << 1)
@@ -385,7 +385,10 @@ typedef struct vwm_get_self {
     *(*default_app) (vwm_t *);
 
   vwm_info *(*info) (vwm_t *);
-  vwm_win *(*current_win) (vwm_t *);
+  vwm_win
+     *(*win_at) (vwm_t *, int),
+     *(*current_win) (vwm_t *);
+
   vwm_term *(*term) (vwm_t *);
   vwm_frame *(*current_frame) (vwm_t *);
 } vwm_get_self;

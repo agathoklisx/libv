@@ -1,4 +1,4 @@
-This is a Virtual Terminal environment that aims for minimalism and targets UNIX like systems.
+This is a Virtual Terminal Environment that aims for minimalism and targets UNIX like systems.
   
 Components:
   
@@ -17,7 +17,9 @@ Components:
   
   - libv:  
     This is a library that links against the above libraries. It provides
-    the v utility.  
+    also the v utility that use the Environment.  
+
+    
   
 Usage:
  
@@ -89,6 +91,7 @@ This it can be set with:
   MODKEY-[left|right]: switch to the prev|next window respectively  
   MODKEY-[h|l]       : likewise  
   MODKEY-`           : switch to the previously focused window  
+  MODKEY-F[1-12]     : switch to `nth' window indicated by the digit of the Function Key    
   MODKEY-[param]+    : increase the size of the current frame (default count 1)  
   MODKEY-[param]-    : decrease the size of the current frame (default count 1)  
   MODKEY-[param]=    : set the lines (param) of the current frame  
