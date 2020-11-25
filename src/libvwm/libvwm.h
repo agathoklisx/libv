@@ -79,6 +79,58 @@ typedef signed int utf8;
 #define DONOT_DRAW  0
 #endif
 
+#ifndef BACKSPACE_KEY
+#define BACKSPACE_KEY   010
+#endif
+
+#ifndef ESCAPE_KEY
+#define ESCAPE_KEY      033
+#endif
+
+#ifndef ARROW_DOWN_KEY
+#define ARROW_DOWN_KEY  0402
+#endif
+
+#ifndef ARROW_UP_KEY
+#define ARROW_UP_KEY    0403
+#endif
+
+#ifndef ARROW_LEFT_KEY
+#define ARROW_LEFT_KEY  0404
+#endif
+
+#ifndef ARROW_RIGHT_KEY
+#define ARROW_RIGHT_KEY 0405
+#endif
+
+#ifndef HOME_KEY
+#define HOME_KEY        0406
+#endif
+
+#ifndef FN_KEY
+#define FN_KEY(x)       (x + 0410)
+#endif
+
+#ifndef DELETE_KEY
+#define DELETE_KEY      0512
+#endif
+
+#ifndef INSERT_KEY
+#define INSERT_KEY      0513
+#endif
+
+#ifndef PAGE_DOWN_KEY
+#define PAGE_DOWN_KEY   0522
+#endif
+
+#ifndef PAGE_UP_KEY
+#define PAGE_UP_KEY     0523
+#endif
+
+#ifndef END_KEY
+#define END_KEY         0550
+#endif
+
 typedef struct vwm_prop vwm_prop;
 typedef struct vwm_term vwm_term;
 typedef struct vwm_win vwm_win;
