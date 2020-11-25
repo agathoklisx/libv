@@ -1,31 +1,5 @@
-/* A testing application.
- * 
- * Interface and Usage: (MODKEY is CTRL-\ by default)
- * 
- * This creates two windows (cycle with MODKEY-[right|left] arrow).
- * 
- * The first window creates two frames (cycle with MODKEY-[up|down] arrow).
- * 
- * The first frame is reserved for the first argument in the command line.
- * If no argument the frame is stays inactive.
- *   (use MODKEY-c to fork the default application (by default this is the zsh shell)
- *    or  MODKEY-! (open a shell (again the default is the zsh shell)
- *   to make it functional).
- * 
- * Use MODKEY-s to split the window and create a new frame (if the length is less than
- * max_frames window initialization option).
- * Likewise, use MODKEY-S-[!ce], but also fork either a shell or the default application,
- * or an editor (by default vim).
- * 
- * Use MODKEY-d to delete the current frame.
- * Use MODKEY-[+-] to [in|de]crease the size of the current frame.
- * Use MODKEY-[param]= to set the size of the current frame.
- *
- * Use MODKEY-[param]n to create a new window (max-frames equals to param).
- *
- * Use MODKEY-[E|PAGE_UP] to edit the scrollback buffer (if it has been set at
- * the frame initialization) with the editor (by default vim). The last
- * lines will be the ones on the display.
+/* An application that utilises the library, that might be useful
+ * as a tiny window manager, though it is meant for demonstration.
  */
 
 #include <stdio.h>

@@ -16,7 +16,7 @@
 #include <pty.h>
 #include <fcntl.h>
 #include <termios.h>
-#include <pthread.h>
+#include <time.h>
 #include <dirent.h>
 #include <signal.h>
 
@@ -327,6 +327,9 @@ struct vwm_prop {
 
   int num_at_exit_cbs;
   VwmAtExit_cb *at_exit_cbs;
+
+  int num_process_input_cbs;
+  ProcessInput_cb *process_input_cbs;
 };
 
 static void vwm_sigwinch_handler (int sig);
@@ -910,6 +913,19 @@ static void term_init_size (vwm_term *this, int *rows, int *cols) {
   TERM_SEND_ESC_SEQ (TERM_LAST_RIGHT_CORNER);
   term_cursor_get_ptr_pos (this, rows, cols);
   term_cursor_set_ptr_pos (this, orig_row, orig_col);
+}
+
+static void vwm_set_process_input_cb (vwm_t *this, ProcessInput_cb cb) {
+  if (NULL is cb) return;
+
+  $my(num_process_input_cbs)++;
+
+  ifnot ($my(num_process_input_cbs) - 1)
+    $my(process_input_cbs) = Alloc (sizeof (ProcessInput_cb));
+  else
+    $my(process_input_cbs) = Realloc ($my(process_input_cbs), sizeof (ProcessInput_cb));
+
+  $my(process_input_cbs)[$my(num_process_input_cbs) -1] = cb;
 }
 
 static void vwm_set_at_exit_cb (vwm_t *this, VwmAtExit_cb cb) {
@@ -4438,12 +4454,24 @@ static int vwm_process_input (vwm_t *this, vwm_win *win, vwm_frame *frame, char 
 getc_again:
   c = self(getkey, STDIN_FILENO);
 
-  if (-1 is c) return OK;
+  if (NOTOK is c) return OK;
 
   if (c is $my(mode_key)) {
     input_buf[0] = $my(mode_key); input_buf[1] = '\0';
     fd_write (frame->fd, input_buf, 1);
     return OK;
+  }
+
+  for (int i = 0; i < $my(num_process_input_cbs); i++) {
+    int retval = $my(process_input_cbs)[i] (this, win, frame, c);
+    if (retval isnot VWM_NO_COMMAND) {
+      if (retval is VWM_PROCESS_INPUT_RETURN)
+        return OK;
+      else if (retval is VWM_QUIT)
+        return VWM_QUIT;
+
+      break;
+    }
   }
 
   switch (c) {
@@ -4682,6 +4710,7 @@ public vwm_t *__init_vwm__ (void) {
         .on_tab_cb = vwm_set_on_tab_cb,
         .at_exit_cb = vwm_set_at_exit_cb,
         .edit_file_cb = vwm_set_edit_file_cb,
+        .process_input_cb = vwm_set_process_input_cb,
         .debug = (vwm_set_debug_self) {
           .sequences = vwm_set_debug_sequences,
           .unimplemented = vwm_set_debug_unimplemented
@@ -4798,6 +4827,7 @@ public vwm_t *__init_vwm__ (void) {
   $my(head) = $my(tail) = $my(current) = NULL;
   $my(name_gen) = ('z' - 'a') + 1;
   $my(num_at_exit_cbs) = 0;
+  $my(process_input_cbs) = 0;
   $my(objects)[VWMED_OBJECT] = NULL;
 
   self(new.term);
@@ -4841,6 +4871,9 @@ public void __deinit_vwm__ (vwm_t **thisp) {
 
   if ($my(num_at_exit_cbs))
     free ($my(at_exit_cbs));
+
+  if ($my(num_process_input_cbs))
+    free ($my(process_input_cbs));
 
   self(unset.debug.sequences);
   self(unset.debug.unimplemented);

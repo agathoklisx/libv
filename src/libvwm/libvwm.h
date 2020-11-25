@@ -63,6 +63,10 @@ typedef signed int utf8;
 #define VWM_IGNORE_FOR_NOW (1 << 1)
 #define VWM_QUIT           (1 << 2) // this coresponds to EXIT_THIS
 
+#define VWM_PROCESS_INPUT_RETURN   -2
+#define VWM_PROCESS_INPUT_CONTINUE -3
+#define VWM_NO_COMMAND             -4
+
 #define VFRAME_CLEAR_VIDEO_MEM   (1 << 0)
 #define VFRAME_CLEAR_LOG         (1 << 1)
 #define VFRAME_ESC_PROCESS_DIGIT (1 << 2)
@@ -88,6 +92,7 @@ typedef int  (*VwmOnTab_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*VwmRLine_cb) (vwm_t *, vwm_win *, vwm_frame *, void *);
 typedef int  (*VwmEditFile_cb) (vwm_t *, vwm_frame *, char *, void *);
 typedef int  (*FrameAtFork_cb) (vwm_frame *, vwm_t *, vwm_win *);
+typedef int  (*ProcessInput_cb) (vwm_t *, vwm_win *, vwm_frame *, utf8);
 
 struct vwm_term {
   struct termios
@@ -421,11 +426,12 @@ typedef struct vwm_set_self {
     (*editor) (vwm_t *, char *),
     (*object) (vwm_t *, void *, int),
     (*mode_key) (vwm_t *, char),
-    (*default_app) (vwm_t *, char *),
     (*rline_cb) (vwm_t *, VwmRLine_cb),
     (*on_tab_cb) (vwm_t *, VwmOnTab_cb),
     (*at_exit_cb) (vwm_t *, VwmAtExit_cb),
-    (*edit_file_cb) (vwm_t *, VwmEditFile_cb);
+    (*default_app) (vwm_t *, char *),
+    (*edit_file_cb) (vwm_t *, VwmEditFile_cb),
+    (*process_input_cb) (vwm_t *, ProcessInput_cb);
 
   int (*tmpdir) (vwm_t *, char *, size_t);
 
