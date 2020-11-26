@@ -539,6 +539,8 @@ private int vwmed_rline_cb (vwm_t *vwm, vwm_win *win, vwm_frame *frame, void *ob
 }
 
 private int vwmed_edit_file (vwmed_t *this, vwm_t *vwm, char *fname) {
+  char *cwd = Dir.current ();
+
   ed_t *ed = E.new ($my(__E__), EdOpts(
       .num_win = 1,
       .init_cb = __init_ext__,
@@ -584,6 +586,9 @@ private int vwmed_edit_file (vwmed_t *this, vwm_t *vwm, char *fname) {
   Ed.set.topline = ed_set_topline_void;
 
   Vterm.raw_mode (Vwm.get.term (vwm));
+
+  chdir (cwd);
+  free (cwd);
 
   return retval;
 }
@@ -723,6 +728,7 @@ private int vwmed_init_ved (vwmed_t *this) {
       .fname = STR_FMT
          ("%s/vwm_unamed", E.get.env ($my(__E__), "data_dir")->bytes)));
 
+  Buf.set.autochdir ($my(buf), 0);
   Buf.set.on_emptyline ($my(buf), "");
   Buf.set.show_statusline ($my(buf), 0);
 

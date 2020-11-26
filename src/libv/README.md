@@ -66,6 +66,7 @@ Invocation and Options:
          --send          send data to the specified socket from standard input and then exit
          --exit          create the socket, fork and then exit
          --remove-socket remove socket if exists and can not be connected
+         --loadfile=     load file for evaluation
 ```
   
 Refer to the sources for inner details and probably a more updated help message  

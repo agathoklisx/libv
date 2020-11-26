@@ -1045,7 +1045,7 @@ static int vwm_set_tmpdir (vwm_t *this, char *dir, size_t len) {
 
   string_clear ($my(tmpdir));
 
-  if (NULL is dir)
+  if (NULL is dir or dir[0] is '\0')
     string_append ($my(tmpdir), TMPDIR);
   else
     string_append_with_len ($my(tmpdir), dir, len);
@@ -3150,7 +3150,7 @@ static void frame_set_unimplemented_cb (vwm_frame *this, FrameUnimplemented_cb c
 static int frame_set_log (vwm_frame *this, char *fname, int remove_log) {
   self(release_log);
 
-  if (NULL is fname) {
+  if (NULL is fname or fname[0] is '\0') {
     tmpname_t t = tmpfname (this->root->prop->tmpdir->bytes, "libvwm");
     if (-1 is t.fd)
       return NOTOK;
@@ -3374,8 +3374,22 @@ static int win_delete_frame (vwm_win *this, vwm_frame *frame, int draw) {
       next_frame: frame = frame->next;
     }
 
-    if (is_last_frame)
-      this->last_frame = this->current;
+    if (is_last_frame or this->current is this->last_frame) {
+      if (1 is num_frames)
+        this->last_frame = this->current;
+      else {
+        frame = this->head;
+        while (frame) {
+          if (frame isnot this->current) {
+            this->last_frame = frame;
+            break;
+          }
+
+          frame = frame->next;
+        }
+      }
+    }
+
 
     self(on_resize, draw);
   }
@@ -3825,6 +3839,18 @@ static void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
 
   Vterm.screen.clear ($my(term));
 
+  ifnot (win->is_initialized) {
+    vwm_frame *frame = win->head;
+    while (frame) {
+      if (frame->argv is NULL)
+        Vframe.set.command (frame, $my(default_app)->bytes);
+
+      Vframe.fork (frame);
+
+      frame = frame->next;
+    }
+  }
+
   if (draw) {
     if (win->is_initialized)
       Vwin.draw (win);
@@ -3832,6 +3858,8 @@ static void vwm_change_win (vwm_t *this, vwm_win *win, int dir, int draw) {
       Vwin.set.separators (win, DRAW);
   } else
     Vwin.set.separators (win, DONOT_DRAW);
+
+  win->is_initialized = 1;
 }
 
 static int vwm_default_edit_file_cb (vwm_t *this, vwm_frame *frame, char *file, void *object) {
@@ -4009,6 +4037,22 @@ static void vwm_release_win (vwm_t *this, vwm_win *win) {
 
   string_release (win->separators_buf);
   string_release (win->render);
+
+  if ($my(last_win) is w and $my(length) isnot 0) {
+    if ($my(length) is 1)
+      $my(last_win) = $my(current);
+    else {
+      vwm_win *lw = $my(head);
+      while (lw) {
+        if (lw isnot $my(current)) {
+          $my(last_win) = lw;
+          break;
+        }
+
+        lw = lw->next;
+      }
+    }
+  }
 
   free (w->name);
   free (w);
@@ -4291,6 +4335,8 @@ static int vwm_main (vwm_t *this) {
     frame = frame->next;
   }
 
+  win->is_initialized = 1;
+
 #define forever for (;;)
 
   forever {
@@ -4407,8 +4453,6 @@ frame_next:
       next_frame:
         frame = frame->next;
     }
-
-    win->is_initialized = 1;
   }
 
   if (retval is 1 or retval is OK) return OK;

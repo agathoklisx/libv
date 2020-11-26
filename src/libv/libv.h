@@ -12,6 +12,7 @@ typedef struct v_init_opts {
   char
     *as,
     *data,
+    *loadfile,
     *sockname,
     **argv;
 
@@ -33,6 +34,7 @@ typedef struct v_init_opts {
   (v_opts) {               \
   .as = NULL,              \
   .data = NULL,            \
+  .loadfile = NULL,        \
   .sockname = NULL,        \
   .argv = NULL,            \
   .argc = 0,               \
@@ -55,11 +57,19 @@ typedef struct v_get_self {
 
 typedef struct v_set_self {
   void (*object) (v_t *, void *, int);
+  int
+    (*i_dir) (v_t *, char *),
+    (*data_dir) (v_t *, char *);
 } v_set_self;
+
+typedef struct v_unset_self {
+  void (*data_dir) (v_t *);
+} v_unset_self;
 
 typedef struct v_self {
   v_get_self get;
   v_set_self set;
+  v_unset_self unset;
 
   int
     (*main) (v_t *),
