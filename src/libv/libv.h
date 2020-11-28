@@ -56,7 +56,12 @@ typedef struct v_get_self {
 } v_get_self;
 
 typedef struct v_set_self {
-  void (*object) (v_t *, void *, int);
+  void
+    (*object) (v_t *, void *, int),
+    (*save_image) (v_t *, int),
+    (*image_file) (v_t *, char *),
+    (*image_name) (v_t *, char *);
+
   int
     (*i_dir) (v_t *, char *),
     (*data_dir) (v_t *, char *);
@@ -73,7 +78,8 @@ typedef struct v_self {
 
   int
     (*main) (v_t *),
-    (*send) (v_t *, char *, char *);
+    (*send) (v_t *, char *, char *),
+    (*save_image) (v_t *, char *);
 } v_self;
 
 typedef struct v_t {

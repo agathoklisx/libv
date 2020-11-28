@@ -35,14 +35,24 @@ struct vwmed_prop {
   win_t  *win;
   buf_t  *buf;
 
+  int state;
+
   EdToplineMethod orig_topline;
   string_t *topline;
   video_t  *video;
 
+  int num_rline_cbs;
+  VwmedRline_cb *rline_cbs;
+
+  int num_rline_command_cbs;
+  VwmedRlineCommand_cb *rline_command_cbs;
+
+  int num_info_cbs;
+  VwmedInfo_cb *info_cbs;
+
   VwmEditFile_cb edit_file_cb;
 
   void *objects[NUM_OBJECTS];
-  int state;
 };
 
 #define VWMED_SHM_FILE  "vwmed_shm"
@@ -192,6 +202,10 @@ private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
   }
 
   fflush (fp);
+
+  for (int i = 0; i < $my(num_info_cbs); i++)
+    $my(info_cbs)[i] (this, vwm, fp);
+
   $my(state) |= (VWMED_BUF_IS_PAGER|VWMED_BUF_HASNOT_EMPTYLINE|
                  VWMED_BUF_DONOT_SHOW_STATUSLINE|VWMED_BUF_DONOT_SHOW_TOPLINE);
 
@@ -202,8 +216,17 @@ private void vwmed_get_info (vwmed_t *this, vwm_t *vwm) {
 }
 
 private int vwmed_process_rline (vwmed_t *this, rline_t *rl, vwm_t *vwm, vwm_win *win, vwm_frame *frame) {
-  int retval = RLINE_NO_COMMAND;
-  string_t *com = Rline.get.command (rl);
+  int retval;
+  string_t *com = NULL;
+
+  for (int i = 0; i < $my(num_rline_cbs); i++) {
+    retval = $my(rline_cbs)[i] (this, rl, vwm, win, frame);
+    if (RLINE_NO_COMMAND isnot retval)
+      goto theend;
+  }
+
+  retval = RLINE_NO_COMMAND;
+  com = Rline.get.command (rl);
 
   if (Cstring.eq (com->bytes, "quit")) {
     int state = Vwm.get.state (vwm);
@@ -660,6 +683,41 @@ private void *vwmed_get_object (vwmed_t *this, int idx) {
   return $my(objects)[idx];
 }
 
+private void vwmed_set_object (vwmed_t *this, void *object, int idx) {
+  if (idx >= NUM_OBJECTS or idx < 0) return;
+  $my(objects)[idx] = object;
+}
+
+private void vwmed_set_rline_cb (vwmed_t *this, VwmedRline_cb cb) {
+  $my(num_rline_cbs)++;
+  ifnot ($my(num_rline_cbs) - 1)
+    $my(rline_cbs) = Alloc (sizeof (VwmedRline_cb));
+  else
+    $my(rline_cbs) = Realloc ($my(rline_cbs), sizeof (VwmedRline_cb) * $my(num_rline_cbs));
+
+  $my(rline_cbs)[$my(num_rline_cbs) - 1] = cb;
+}
+
+private void vwmed_set_rline_command_cb (vwmed_t *this, VwmedRlineCommand_cb cb) {
+  $my(num_rline_command_cbs)++;
+  ifnot ($my(num_rline_command_cbs) - 1)
+    $my(rline_command_cbs) = Alloc (sizeof (VwmedRlineCommand_cb));
+  else
+    $my(rline_command_cbs) = Realloc ($my(rline_command_cbs), sizeof (VwmedRlineCommand_cb) * $my(num_rline_command_cbs));
+
+  $my(rline_command_cbs)[$my(num_rline_command_cbs) - 1] = cb;
+}
+
+private void vwmed_set_info_cb (vwmed_t *this, VwmedInfo_cb cb) {
+  $my(num_info_cbs)++;
+  ifnot ($my(num_info_cbs) - 1)
+    $my(info_cbs) = Alloc (sizeof (VwmedInfo_cb));
+  else
+    $my(info_cbs) = Realloc ($my(info_cbs), sizeof (VwmedInfo_cb) * $my(num_info_cbs));
+
+  $my(info_cbs)[$my(num_info_cbs) - 1] = cb;
+}
+
 private int vwmed_init_ved (vwmed_t *this) {
   vwm_t *vwm = $my(objects)[VWM_OBJECT];
 
@@ -703,6 +761,8 @@ private int vwmed_init_ved (vwmed_t *this) {
   Ed.append.rline_command ($my(ed), "set", 0, 0);
   Ed.append.command_arg   ($my(ed), "set", "--log-file=", 11);
 
+  Ed.append.rline_command ($my(ed), "info", 0, 0);
+
   Ed.append.rline_command ($my(ed), "ed", 0, 0);
   if (Cstring.eq_n ("veda", Vwm.get.editor (vwm), 4)) {
     Ed.append.command_arg ($my(ed), "ed", "--exit", 6);
@@ -717,9 +777,10 @@ private int vwmed_init_ved (vwmed_t *this) {
     Ed.append.command_arg ($my(ed), "ed", "--load-file=", 13);
     Ed.append.command_arg ($my(ed), "ed", "--backupfile", 13);
     Ed.append.command_arg ($my(ed), "ed", "--backup-suffix=", 17);
- }
+  }
 
-  Ed.append.rline_command ($my(ed), "info", 0, 0);
+  for (int i = 0; i < $my(num_rline_command_cbs); i++)
+    $my(rline_command_cbs)[i] ($my(ed));
 
   Ed.set.rline_cb ($my(ed), ed_rline_cb);
 
@@ -778,6 +839,12 @@ public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
       .e = vwmed_get_e,
       .object = vwmed_get_object
     },
+    .set = (vwmed_set_self) {
+      .object = vwmed_set_object,
+      .info_cb = vwmed_set_info_cb,
+      .rline_cb = vwmed_set_rline_cb,
+      .rline_command_cb = vwmed_set_rline_command_cb
+    },
     .init = (vwmed_init_self) {
       .ved = vwmed_init_ved,
       .term = vwmed_init_term
@@ -789,6 +856,12 @@ public vwmed_t *__init_vwmed__ (vwm_t *vwm) {
 
   $my(state) = 0;
   $my(edit_file_cb) = vwmed_edit_file_cb;
+  $my(num_rline_cbs) = 0;
+  $my(rline_cbs) = NULL;
+  $my(num_rline_command_cbs) = 0;
+  $my(rline_command_cbs) = NULL;
+  $my(num_info_cbs) = 0;
+  $my(info_cbs) = NULL;
 
   if (NULL is vwm)
     vwm = __init_vwm__ ();
@@ -806,6 +879,15 @@ public void __deinit_vwmed__ (vwmed_t **thisp) {
   vwmed_t *this = *thisp;
 
   __deinit_this__ (&$my(__This__));
+
+  if ($my(num_rline_cbs))
+    free ($my(rline_cbs));
+
+  if ($my(num_rline_command_cbs))
+    free ($my(rline_command_cbs));
+
+  if ($my(num_info_cbs))
+    free ($my(info_cbs));
 
   free (this->prop);
   free (this);

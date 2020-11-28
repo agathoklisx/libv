@@ -1298,6 +1298,10 @@ static vwm_win *vwm_get_current_win (vwm_t *this) {
   return $my(current);
 }
 
+static int vwm_get_current_win_idx (vwm_t *this) {
+  return $my(cur_idx);
+}
+
 static vwm_frame *vwm_get_current_frame (vwm_t *this) {
   return $my(current)->current;
 }
@@ -3038,6 +3042,10 @@ static int frame_get_visibility (vwm_frame *this) {
   return this->is_visible;
 }
 
+static int frame_get_remove_log (vwm_frame *this) {
+  return this->remove_log;
+}
+
 static int frame_get_argc (vwm_frame *this) {
   return this->argc;
 }
@@ -3920,12 +3928,24 @@ static int win_get_num_frames (vwm_win *this) {
   return this->length;
 }
 
+static int win_get_max_frames (vwm_win *this) {
+  return this->max_frames;
+}
+
 static int win_get_num_visible_frames (vwm_win *this) {
   return this->num_visible_frames;
 }
 
 static vwm_frame *win_get_current_frame (vwm_win *this) {
   return this->current;
+}
+
+static int win_get_current_frame_idx (vwm_win *this) {
+  return this->cur_idx;
+}
+
+static char *win_get_name (vwm_win *this) {
+  return this->name;
 }
 
 static vwm_frame *win_get_frame_at (vwm_win *this, int idx) {
@@ -4723,7 +4743,8 @@ public vwm_t *__init_vwm__ (void) {
         .mode_key = vwm_get_mode_key,
         .current_win = vwm_get_current_win,
         .default_app = vwm_get_default_app,
-        .current_frame = vwm_get_current_frame
+        .current_frame = vwm_get_current_frame,
+        .current_win_idx = vwm_get_current_win_idx
       },
       .set = (vwm_set_self) {
         .size = vwm_set_size,
@@ -4791,11 +4812,14 @@ public vwm_t *__init_vwm__ (void) {
       },
       .get = (vwm_win_get_self) {
         .info = win_get_info,
+        .name = win_get_name,
         .frame_at = win_get_frame_at,
         .frame_idx = win_get_frame_idx,
         .num_frames = win_get_num_frames,
+        .max_frames = win_get_max_frames,
+        .current_frame = win_get_current_frame,
+        .current_frame_idx = win_get_current_frame_idx,
         .num_visible_frames = win_get_num_visible_frames,
-        .current_frame = win_get_current_frame
       },
       .frame = (vwm_win_frame_self) {
         .change = win_frame_change,
@@ -4829,6 +4853,7 @@ public vwm_t *__init_vwm__ (void) {
         .parent = frame_get_parent,
         .logfile = frame_get_logfile,
         .num_rows = frame_get_num_rows,
+        .remove_log = frame_get_remove_log,
         .visibility = frame_get_visibility
       },
       .set = (vwm_frame_set_self) {

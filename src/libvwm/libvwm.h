@@ -317,6 +317,7 @@ typedef struct vwm_frame_get_self {
     (*argc) (vwm_frame *),
     (*logfd) (vwm_frame *),
     (*num_rows) (vwm_frame *),
+    (*remove_log) (vwm_frame *),
     (*visibility) (vwm_frame *);
 
   pid_t (*pid) (vwm_frame *);
@@ -378,9 +379,13 @@ typedef struct vwm_win_set_self {
 } vwm_win_set_self;
 
 typedef struct vwm_win_get_self {
+  char *(*name) (vwm_win *);
+
   int
     (*frame_idx) (vwm_win *, vwm_frame *),
     (*num_frames) (vwm_win *),
+    (*max_frames) (vwm_win *),
+    (*current_frame_idx) (vwm_win *),
     (*num_visible_frames) (vwm_win *);
 
   vwm_frame
@@ -432,7 +437,8 @@ typedef struct vwm_get_self {
     (*lines) (vwm_t *),
     (*columns) (vwm_t *),
     (*win_idx) (vwm_t *, vwm_win *),
-    (*num_wins) (vwm_t *);
+    (*num_wins) (vwm_t *),
+    (*current_win_idx) (vwm_t *);
 
   char
     *(*shell) (vwm_t *),

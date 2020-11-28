@@ -34,7 +34,67 @@ This it can be set with:
   MODKEY-MODE_KEY    : return the MODE_KEY to the application  
   MODKEY-ESCAPE_KEY  : return with no action  
   MODKEY-CTRL(d)     : detach application  
+
+Issue MODKEY-: for a readline interface.
+
+This offers command, argument and filename completion.  
   
+Editing line mode keybindings:  
+ |   key[s]          |  Semantics                     |  
+ |___________________|________________________________|  
+ | carriage return   | accepts                        |  
+ | escape            | aborts                         |  
+ | ARROW[UP|DOWN]    | search item on the history list|  
+ | ARROW[LEFT|RIGHT] | left|right cursor              |  
+ | CTRL-a|HOME       | cursor to the beginning        |  
+ | CTRL-e|END        | cursor to the end              |  
+ | DELETE|BACKSPACE  | delete next|previous char      |  
+ | CTRL-r            | insert register contents (charwise only)|  
+ | CTRL-l            | clear line                     |  
+ | CTRL-/ |CTRL-_    | insert last component of previous command|  
+ |   can be repeated for: RLINE_LAST_COMPONENT_NUM_ENTRIES (default: 10)|  
+ | TAB               | trigger completion[s]          |  
+
+
+ - command completion is triggered when the cursor is at the first word token.  
+  (note: and also by default, and when the first char is one of the "`~@" set).  
+  
+ - arg completion is triggered when the first char word token is an '-'.
+   (otherwise a filename completion is performed).  
+
+Commands should be self explanatory and should be execute (albeit with  
+optional arguments) the basic commands.  
+  
+Setting and restoring an image of the current layout.  
+The initial setting is done through the set command:  
+
+  :set --image-name=name --save-image=1  
+
+Though there are other choises, this is the supported development intention,  
+as it makes more practical sense, since first is controlled through an inner  
+mechanism, and then it allows restoring the saved image, in a permanent way    
+at the shell invovation level, easily with:  
+  
+  v --loadfile=name  
+  
+This should restore the saved image.  
+  
+But and for testing mostly purposes, it can work also that way:  
+  :set --image-file=/some/file --save-image=1  
+  :@save_image 
+  
+or simply  
+  :@save_image --as=/some/file  
+  
+But the image is saved automatically at the application deinitialization,  
+and if the --save-image=1 argument has been set before.  
+Using:
+ 
+  :set --save-image=0  
+
+unsets the option.  
+
+
 Application Interface.
 ```C
   // set the options
