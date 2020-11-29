@@ -34,6 +34,7 @@
 
 struct v_prop {
   char
+    *current_dir,
     *image_name,
     *image_file;
 
@@ -71,10 +72,12 @@ static const char usage[] =
   "\n";
 
 private char *v_get_sockname (v_t *this) {
-  ifnot (NULL is $my(opts)->sockname)
-    return $my(opts)->sockname;
   ifnot (NULL is $my(as_sockname))
     return $my(as_sockname)->bytes;
+
+  ifnot (NULL is $my(opts)->sockname)
+    return $my(opts)->sockname;
+
   return NULL;
 }
 
@@ -151,6 +154,24 @@ private int v_set_i_dir (v_t *this, char *dir) {
   }
 
   E.set.i_dir ($my(objects)[E_OBJECT], dir);
+  return OK;
+}
+
+private int v_set_current_dir (v_t *this, char *dir, int is_malloced) {
+  char *cwd = dir;
+
+  if (NULL is cwd) return NOTOK;
+
+  if (-1 is chdir (cwd)) return NOTOK;
+
+  ifnot (NULL is $my(current_dir))
+    free ($my(current_dir));
+
+  if (is_malloced)
+    $my(current_dir) = cwd;
+  else
+    $my(current_dir) = Cstring.dup (dir, bytelen (dir));
+
   return OK;
 }
 
@@ -232,6 +253,7 @@ private int v_save_image (v_t *this, char *fname) {
   if (NULL is fp) return NOTOK;
 
   int cur_win_idx = Vwm.get.current_win_idx (vwm);
+  char *cwd = Dir.current ();
 
   fprintf (fp,
     "# v image script\n\n"
@@ -249,13 +271,14 @@ private int v_save_image (v_t *this, char *fname) {
     "var cur_frame_idx = 0\n"
     "var visibility = 0\n"
     "var num_visible_frames = 0\n"
-    "\n"
     "var save_image = %d\n\n"
+    "\n"
     "var force = %d\n"
     "if (force) {\n"
     "  v_set_opt_force (v, 1)\n"
     "}\n"
     "\n"
+    "sys_set_current_dir (\"%s\")\n"
     "v_set_sockname (v, \"%s\")\n"
     "v_set_raw_mode (v)\n"
     "v_set_size (v)\n"
@@ -265,11 +288,14 @@ private int v_save_image (v_t *this, char *fname) {
     "var num_win = %d\n"
     "\n"
     "cur_win_idx = %d\n",
-    $my(always_connect),
     $my(save_image),
+    $my(always_connect),
+    cwd,
     self(get.sockname),
     Vwm.get.num_wins (vwm),
     cur_win_idx);
+
+  free (cwd);
 
   int num_wins = Vwm.get.num_wins (vwm);
 
@@ -391,6 +417,15 @@ private int v_rline_cb (vwmed_t *vwmed, rline_t *rl, vwm_t *vwm, vwm_win *win, v
     retval = self(save_image, fname);
 
     goto theend;
+  } else if (Cstring.eq (com->bytes, "`chdir")) {
+    Vstring_t *dir = Rline.get.arg_fnames (rl, 1);
+    ifnot (NULL is dir) {
+      retval = self(set.current_dir, dir->head->data->bytes, 0);
+      Vstring.free (dir);
+    } else
+      retval = OK;
+
+    goto theend;
   }
 
 theend:
@@ -406,6 +441,8 @@ private void v_rline_command_cbs (ed_t *ed) {
 
   Ed.append.rline_command (ed, "@save_image", 0, 0);
   Ed.append.command_arg   (ed, "@save_image", "--as=", 5);
+
+  Ed.append.rline_command (ed, "`chdir", 1, RL_ARG_FILENAME);
 }
 
 private int v_info_cb (vwmed_t *vwmed, vwm_t *vwm, FILE *fp) {
@@ -416,10 +453,12 @@ private int v_info_cb (vwmed_t *vwmed, vwm_t *vwm, FILE *fp) {
   fprintf (fp,
       "\n"
       "--= V info =--\n"
+      "Current directory  : %s\n"
       "Save image         : %d\n"
       "Image name         : %s\n"
       "Image file         : %s\n"
       "Socket Name        : %s\n",
+      $my(current_dir),
       $my(save_image),
       $my(image_name),
       $my(image_file),
@@ -663,6 +702,13 @@ private ival_t i_v_set_frame_visibility (i_t *__i, v_t *this, vwm_frame *frame, 
   return I_OK;
 }
 
+private ival_t i_sys_set_current_dir (i_t* __i, char *dir) {
+  (void) __i;
+  int retval = chdir (dir);
+  free (dir);
+  return retval;
+}
+
 private ival_t i_v_set_frame_log (i_t *__i, v_t *this, vwm_frame *frame, char *fname, int val) {
   (void) __i;
   vwm_t *vwm = $my(objects)[VWM_OBJECT];
@@ -801,6 +847,7 @@ struct vfun_t {
   { "v_set_opt_force",        (ival_t) i_v_set_opt_force, 2},
   { "v_set_frame_command",    (ival_t) i_v_set_frame_command, 3},
   { "v_set_frame_visibility", (ival_t) i_v_set_frame_visibility, 3},
+  { "sys_set_current_dir",    (ival_t) i_sys_set_current_dir, 1},
   { "v_win_get_frame_at",     (ival_t) i_v_win_get_frame_at, 3},
   { "v_win_set_current_at",   (ival_t) i_v_win_set_current_at, 3},
   { "v_new_win",              (ival_t) i_v_new_win, 3},
@@ -890,7 +937,8 @@ private int v_main (v_t *this) {
       return 1;
 
     sockname = $my(as_sockname)->bytes;
-  }
+  } else
+    $my(as_sockname) = String.new_with (sockname);
 
   if (opts->exit_on_no_command) {
     if (argc is 0 or argv is NULL) {
@@ -981,7 +1029,8 @@ public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
       .data_dir = v_set_data_dir,
       .save_image = v_set_save_image,
       .image_file = v_set_image_file,
-      .image_name = v_set_image_name
+      .image_name = v_set_image_name,
+      .current_dir = v_set_current_dir
     },
     .unset = (v_unset_self) {
       .data_dir = v_unset_data_dir
@@ -998,21 +1047,18 @@ public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
   $my(image_file) = NULL;
   $my(image_name) = NULL;
   $my(as_sockname) = NULL;
+  $my(current_dir) = NULL;
   $my(data_dir) = NULL;
   $my(save_image) = 0;
   $my(always_connect) = 0;
 
   if (NULL is vwm)
-    if (NULL is (vwm = __init_vwm__ ())) {
-      __deinit_v__ (&this);
-      return NULL;
-    }
+    if (NULL is (vwm = __init_vwm__ ()))
+      goto theerror;
 
   vtach_t *vtach;
-  if (NULL is (vtach = __init_vtach__ (vwm))) {
-    __deinit_v__ (&this);
-    return NULL;
-  }
+  if (NULL is (vtach = __init_vtach__ (vwm)))
+    goto theerror;
 
   vwmed_t *vwmed;
   if (NULL is (vwmed = __init_vwmed__ (vwm))) {
@@ -1029,10 +1075,8 @@ public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
     }
 
     vwmed = __init_vwmed__ (vwm);
-    if (NULL is vwmed) {
-      __deinit_v__ (&this);
-      return NULL;
-    }
+    if (NULL is vwmed)
+      goto theerror;
 
     if (-1 isnot tcgetattr ($my(input_fd), &orig_mode))
       $my(orig_mode) = orig_mode;
@@ -1054,10 +1098,15 @@ public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
   Vwmed.set.rline_command_cb (vwmed, v_rline_command_cbs);
   Vwmed.set.info_cb (vwmed, v_info_cb);
 
-  self(set.data_dir, NULL);
-  self(set.i_dir, NULL);
+  if (NOTOK is self(set.data_dir, NULL)) goto theerror;
+  if (NOTOK is self(set.i_dir, NULL)) goto theerror;
+  if (NOTOK is self(set.current_dir, Dir.current (), 1)) goto theerror;
 
   return this;
+
+theerror:
+  __deinit_v__ (&this);
+  return NULL;
 }
 
 public void __deinit_v__ (v_t **thisp) {
@@ -1070,6 +1119,7 @@ public void __deinit_v__ (v_t **thisp) {
 
   ifnot (NULL is $my(image_file)) free ($my(image_file));
   ifnot (NULL is $my(image_name)) free ($my(image_name));
+  ifnot (NULL is $my(current_dir)) free ($my(current_dir));
 
   vtach_t *vtach = $my(objects)[VTACH_OBJECT];
   vwmed_t *vwmed = $my(objects)[VWMED_OBJECT];

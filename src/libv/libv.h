@@ -64,6 +64,7 @@ typedef struct v_set_self {
 
   int
     (*i_dir) (v_t *, char *),
+    (*current_dir) (v_t *, char *, int),
     (*data_dir) (v_t *, char *);
 } v_set_self;
 
