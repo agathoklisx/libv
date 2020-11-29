@@ -39,7 +39,8 @@ struct v_prop {
 
   int
     input_fd,
-    save_image;
+    save_image,
+    always_connect;
 
   string_t
     *data_dir,
@@ -239,6 +240,7 @@ private int v_save_image (v_t *this, char *fname) {
     "var v = v_get ()\n"
     "var num_frames = 0\n"
     "var max_frames = 0\n"
+    "var force = 0\n"
     "var log = 0\n"
     "var remove_log = 1\n"
     "var win = NULL\n"
@@ -248,7 +250,11 @@ private int v_save_image (v_t *this, char *fname) {
     "var visibility = 0\n"
     "var num_visible_frames = 0\n"
     "\n"
-    "var save_image = %d\n"
+    "var save_image = %d\n\n"
+    "var force = %d\n"
+    "if (force) {\n"
+    "  v_set_opt_force (v, 1)\n"
+    "}\n"
     "\n"
     "v_set_sockname (v, \"%s\")\n"
     "v_set_raw_mode (v)\n"
@@ -259,6 +265,7 @@ private int v_save_image (v_t *this, char *fname) {
     "var num_win = %d\n"
     "\n"
     "cur_win_idx = %d\n",
+    $my(always_connect),
     $my(save_image),
     self(get.sockname),
     Vwm.get.num_wins (vwm),
@@ -369,6 +376,10 @@ private int v_rline_cb (vwmed_t *vwmed, rline_t *rl, vwm_t *vwm, vwm_win *win, v
     ifnot (NULL is arg)
       self(set.image_name, arg->bytes);
 
+    arg = Rline.get.anytype_arg (rl, "always-connect");
+    ifnot (NULL is arg)
+      $my(always_connect) = atoi (arg->bytes);
+
     retval = OK;
     goto theend;
   } else if (Cstring.eq (com->bytes, "@save_image")) {
@@ -391,6 +402,7 @@ private void v_rline_command_cbs (ed_t *ed) {
   Ed.append.command_arg (ed, "set", "--save-image=", 13);
   Ed.append.command_arg (ed, "set", "--image-name=", 13);
   Ed.append.command_arg (ed, "set", "--image-file=", 13);
+  Ed.append.command_arg (ed, "set", "--always-connect=", 17);
 
   Ed.append.rline_command (ed, "@save_image", 0, 0);
   Ed.append.command_arg   (ed, "@save_image", "--as=", 5);
@@ -595,6 +607,12 @@ private ival_t i_v_get_cols (i_t *__i, v_t *this) {
   return Vwm.get.columns (vwm);
 }
 
+private ival_t i_v_set_opt_force (i_t *__i, v_t *this, int val) {
+  (void) __i;
+  $my(opts)->force = val;
+  return I_OK;
+}
+
 private ival_t i_v_win_get_frame_at (i_t *__i, v_t *this, vwm_win *win, int idx) {
   (void) __i;
   vwm_t *vwm = $my(objects)[VWM_OBJECT];
@@ -707,7 +725,12 @@ private ival_t i_v_main (i_t *__i, v_t *this) {
 
   char *sockname = $my(as_sockname)->bytes;
 
+  if (NULL is sockname) return I_NOTOK;
+
   vtach_t *vtach = $my(objects)[VTACH_OBJECT];
+
+  v_opts *opts = $my(opts);
+  (void) opts;
 
   int attach = 0;
   if (File.exists (sockname)) {
@@ -718,9 +741,18 @@ private ival_t i_v_main (i_t *__i, v_t *this) {
 
     int fd = Vtach.sock.connect (vtach, sockname);
     if (NOTOK is fd) {
-      fprintf (stderr,
-          "socket %s exists but can not connect/attach\n", sockname);
-      return 1;
+      if (opts->force) {
+        if (-1 is unlink (sockname)) {
+          fprintf (stderr,
+              "socket %s exists, and cannot be removed %s\n",
+               sockname, strerror (errno));
+          return I_NOTOK;
+        }
+      } else {
+        fprintf (stderr,
+            "socket %s exists but can not connect/attach\n", sockname);
+        return I_NOTOK;
+      }
     } else
       close (fd);
 
@@ -766,6 +798,7 @@ struct vfun_t {
   { "v_set_image_name",       (ival_t) i_v_set_image_name, 2},
   { "v_set_image_file",       (ival_t) i_v_set_image_file, 2},
   { "v_set_current_at",       (ival_t) i_v_set_current_at, 2},
+  { "v_set_opt_force",        (ival_t) i_v_set_opt_force, 2},
   { "v_set_frame_command",    (ival_t) i_v_set_frame_command, 3},
   { "v_set_frame_visibility", (ival_t) i_v_set_frame_visibility, 3},
   { "v_win_get_frame_at",     (ival_t) i_v_win_get_frame_at, 3},
@@ -813,12 +846,6 @@ private int v_main (v_t *this) {
   v_opts *opts = $my(opts);
 
   int argc = opts->argc;
-  int force = opts->force;
-  int attach = opts->attach;
-  int exit_this = opts->exit;
-  int send_data = opts->send_data;
-  int remove_socket = opts->remove_socket;
-  int exit_on_no_command = opts->exit_on_no_command;
   char *sockname = opts->sockname;
   char *loadfile = opts->loadfile;
   char **argv = opts->argv;
@@ -834,11 +861,11 @@ private int v_main (v_t *this) {
       OPT_STRING(0, "as", &as, "create the socket name in an inner environment [required if -s is missing]", NULL, 0, 0),
       OPT_STRING('s', "sockname", &sockname, "set the socket name [required if --as= missing]", NULL, 0, 0),
       OPT_STRING(0, "loadfile", &loadfile, "load file for evaluation", NULL, 0, 0), 
-      OPT_BOOLEAN('a', "attach", &attach, "attach to the specified socket", NULL, 0, 0),
-      OPT_BOOLEAN(0, "force", &force, "connect to socket, even when socket exists", NULL, 0, 0),
-      OPT_BOOLEAN(0, "send", &send_data, "send data to the specified socket", NULL, 0, 0),
-      OPT_BOOLEAN(0, "exit", &exit_this, "create the socket, fork and then exit", NULL, 0, 0),
-      OPT_BOOLEAN(0, "remove-socket", &remove_socket, "remove socket if exists and can not be connected", NULL, 0, 0),
+      OPT_BOOLEAN('a', "attach", &opts->attach, "attach to the specified socket", NULL, 0, 0),
+      OPT_BOOLEAN(0, "force", &opts->force, "connect to socket, even when socket exists", NULL, 0, 0),
+      OPT_BOOLEAN(0, "send", &opts->send_data, "send data to the specified socket", NULL, 0, 0),
+      OPT_BOOLEAN(0, "exit", &opts->exit, "create the socket, fork and then exit", NULL, 0, 0),
+      OPT_BOOLEAN(0, "remove-socket", &opts->remove_socket, "remove socket if exists and can not be connected", NULL, 0, 0),
       OPT_END()
     };
 
@@ -865,9 +892,9 @@ private int v_main (v_t *this) {
     sockname = $my(as_sockname)->bytes;
   }
 
-  if (exit_on_no_command) {
+  if (opts->exit_on_no_command) {
     if (argc is 0 or argv is NULL) {
-      if ((0 is attach and 0 is send_data)) {
+      if ((0 is opts->attach and 0 is opts->send_data)) {
         fprintf (stderr, "command hasn't been set\n");
         fprintf (stderr, "%s", usage);
         return 1;
@@ -876,9 +903,9 @@ private int v_main (v_t *this) {
   }
 
   if (File.exists (sockname)) {
-    if (0 is attach and 0 is send_data) {
-      ifnot (force) {
-        ifnot (remove_socket) {
+    if (0 is opts->attach and 0 is opts->send_data) {
+      ifnot (opts->force) {
+        ifnot (opts->remove_socket) {
           fprintf (stderr, "%s: exists in the filesystem\n", sockname);
           return 1;
         }
@@ -891,13 +918,13 @@ private int v_main (v_t *this) {
     }
 
     int fd = Vtach.sock.connect (vtach, sockname);
-    if (0 is attach and 0 is send_data)
-      if (remove_socket)
+    if (0 is opts->attach and 0 is opts->send_data)
+      if (opts->remove_socket)
         unlink (sockname);
 
     if (NOTOK is fd) {
-      if (attach or send_data) {
-        if (remove_socket)
+      if (opts->attach or opts->send_data) {
+        if (opts->remove_socket)
           unlink (sockname);
         fprintf (stderr, "can not connect/attach to the socket\n");
         return 1;
@@ -906,20 +933,20 @@ private int v_main (v_t *this) {
       close (fd);
   }
 
-  if (0 is send_data or (send_data and data isnot NULL)) {
+  if (0 is opts->send_data or (opts->send_data and data isnot NULL)) {
     if (0 is isatty (fileno (stdin))) {
       fprintf (stderr, "Not a controlled terminal\n");
       return 1;
     }
   }
 
-  if (send_data)
+  if (opts->send_data)
     return self(send, sockname, data);
 
   if (NOTOK is Vtach.init.pty (vtach, sockname))
     return 1;
 
-  ifnot (attach) {
+  ifnot (opts->attach) {
     vwmed_t *vwmed = $my(objects)[VWMED_OBJECT];
     Vwmed.init.ved (vwmed);
 
@@ -930,7 +957,7 @@ private int v_main (v_t *this) {
     Vtach.pty.main (vtach, argc, argv);
   }
 
-  if (exit_this)
+  if (opts->exit)
     return 0;
 
   return Vtach.tty.main (vtach);
@@ -972,6 +999,8 @@ public v_t *__init_v__ (vwm_t *vwm, v_opts *opts) {
   $my(image_name) = NULL;
   $my(as_sockname) = NULL;
   $my(data_dir) = NULL;
+  $my(save_image) = 0;
+  $my(always_connect) = 0;
 
   if (NULL is vwm)
     if (NULL is (vwm = __init_vwm__ ())) {
