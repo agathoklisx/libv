@@ -3453,6 +3453,11 @@ static void win_release_frame_at (vwm_win *this, int idx) {
   Vframe.release_argv (frame);
   string_release (frame->render);
 
+  ifnot (-1 is frame->pid) {
+    kill (this->pid, SIGHUP);
+    waitpid (this->pid, NULL, 0);
+  }
+
   free (frame);
 }
 
@@ -4475,7 +4480,7 @@ frame_next:
     }
   }
 
-  if (retval is 1 or retval is OK) return OK;
+  if (retval is 1 or retval is OK or retval is VWM_QUIT) return OK;
 
   return NOTOK;
 }
