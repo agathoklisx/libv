@@ -262,7 +262,6 @@ private int v_save_image (v_t *this, char *fname) {
     "var v = v_get ()\n"
     "var num_frames = 0\n"
     "var max_frames = 0\n"
-    "var force = 0\n"
     "var log = 0\n"
     "var remove_log = 1\n"
     "var win = NULL\n"
@@ -648,7 +647,8 @@ private ival_t i_v_get_cols (i_t *__i, v_t *this) {
 
 private ival_t i_v_set_opt_force (i_t *__i, v_t *this, int val) {
   (void) __i;
-  $my(opts)->force = val;
+  $my(opts)->force = (val isnot 0);
+  $my(always_connect) = $my(opts)->force;
   return I_OK;
 }
 
@@ -776,7 +776,6 @@ private ival_t i_v_main (i_t *__i, v_t *this) {
   vtach_t *vtach = $my(objects)[VTACH_OBJECT];
 
   v_opts *opts = $my(opts);
-  (void) opts;
 
   int attach = 0;
   if (File.exists (sockname)) {
@@ -799,10 +798,10 @@ private ival_t i_v_main (i_t *__i, v_t *this) {
             "socket %s exists but can not connect/attach\n", sockname);
         return I_NOTOK;
       }
-    } else
+    } else {
       close (fd);
-
-    attach = 1;
+      attach = 1;
+    }
   }
 
   if (NOTOK is Vtach.init.pty (vtach, sockname))

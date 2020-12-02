@@ -3454,8 +3454,8 @@ static void win_release_frame_at (vwm_win *this, int idx) {
   string_release (frame->render);
 
   ifnot (-1 is frame->pid) {
-    kill (this->pid, SIGHUP);
-    waitpid (this->pid, NULL, 0);
+    kill (frame->pid, SIGHUP);
+    waitpid (frame->pid, NULL, 0);
   }
 
   free (frame);
