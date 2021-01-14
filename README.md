@@ -28,13 +28,13 @@ Usage:
 
 git clone --recurse-submodules https://github.com/agathoklisx/libv
 
-# if you've already cloned the sources issue to get the submodule:
+# if you've already cloned the sources, issue to get the submodule:
 
 git submodule update --init
 ```
 
-In every library directory there is a specific Makefile to build the targets.
-This Makefile doesn't handle the dependencies.  
+In every library directory there is a specific Makefile to build the specific target.  
+Note that those Makefiles don't handle dependencies.  
   
 From any of those directories issue:
 ```sh
@@ -53,6 +53,8 @@ make app-static
 ```
 
 In the src directory there is a generic Makefile that builds all the targets.  
+Note that is the recommended way to build any desired target, as this method it  
+also handles dependencies.  
 ```sh
 # basic instructions
 
@@ -66,22 +68,24 @@ make v-static
 ```
 Refer to src/README.md or to src/Makefile for details.
 
-In every subdirectory there is also a README.md.
+Note that in every subdirectory there is also a specific README.md.  
 
+The v utility.
 ```sh
 # for a short help issue:
 
 v --help
 ```
 
-Default keybindings of the v utility:  
+Default keybindings:  
 
-By default the `MODKEY' key is CTRL-\.  
+By default the `MODKEY' key is CTRL-\.
 
 This it can be set with:  
   
   Vwm.set.mode_key (vwm_t *, char);  
 
+<pre>
   MODKEY-q           : quit the application  
   MODKEY-K           : kill the current procedure in the current frame  
   MODKEY-!           : open the default shell (by default zsh)  
@@ -106,7 +110,7 @@ This it can be set with:
   MODKEY-CTRL(d)     : detach application  
   MODKEY-TAB         : command completion with the default parameters  
   MODKEY-:           : command completion and readline  
-
+</pre>
 Status:  
 The environment is complex enough and the code is at early stage (was
 initialized at the mid days of the September of 2020). So naturally is not stable.  
